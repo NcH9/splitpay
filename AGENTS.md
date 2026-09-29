@@ -63,16 +63,23 @@ Three specifics worth spelling out, because they are easy to get wrong:
 
 ## Everyday workflow
 
-- Run the app with `symfony serve -d`, and commands with `symfony console ...`
-  (or `bin/console` when the Symfony CLI isn't available).
+- This project runs through Docker Compose.
+  Start the environment with `docker compose up -d`
+  Run Symfony commands inside the PHP container `docker compose exec php php bin/console ...`
+  Run PHPUnit with `docker compose exec php php bin/phpunit`
+  Run Composer with `docker compose exec php composer ...`
+  Do not use `symfony serve` for the application runtime unless the task explicitly requires running Symfony outside Docker.
 - When something fails, read `var/log/dev.log` and the web profiler
-  (`/_profiler`) before changing code.
+  If the problem may be related to Docker, PHP-FPM, or nginx, also check:
+  docker compose logs php
+  docker compose logs nginx
+  Use the Symfony web profiler (/_profiler) when it is installed and available.
 - If `maker-bundle` is installed, prefer `bin/console make:*` with every argument
   passed up front and `--no-interaction` where supported: makers prompt on a
   terminal by default, which hangs a non-interactive shell. If a maker still
   needs interactive input, hand-write the code instead.
 - If Doctrine ORM is installed, schema changes go through migrations
-  (`bin/console make:migration`, then `doctrine:migrations:migrate`), never
+  (`docker compose exec php php bin/console make:migration`, then `docker compose exec php php bin/console doctrine:migrations:migrate`), never
   `doctrine:schema:update` or hand-written SQL.
 - `.env` is committed and holds defaults only. Real secrets belong in `.env.local`
   (git-ignored) or the secrets vault (`bin/console secrets:set`), read via
