@@ -16,6 +16,10 @@ class PaymentRepository extends ServiceEntityRepository
         parent::__construct($registry, Payment::class);
     }
 
+    public function create($data) {
+        
+    }
+
 //    /**
 //     * @return Payment[] Returns an array of Payment objects
 //     */
