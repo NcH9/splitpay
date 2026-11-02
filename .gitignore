@@ -11,3 +11,8 @@
 
 .env
 .env.local
+.env.test
+###> phpunit/phpunit ###
+/phpunit.xml
+/.phpunit.cache/
+###< phpunit/phpunit ###

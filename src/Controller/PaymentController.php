@@ -1,15 +1,23 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Controller;
 
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
-use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\Routing\Attribute\Route;
 
-class PaymentController extends AbstractController
+/**
+ * PaymentController — stub for Section 2.
+ * Full implementation (ProcessPaymentRequest + PaymentStrategyResolver) is added in Section 2.
+ */
+#[Route('/payments', name: 'payment_')]
+final class PaymentController extends AbstractController
 {
-    public function create(Request $request) {}
-    public function update() {}
-    public function show(int $id) {
-        
+    #[Route('/{id}', name: 'show', methods: ['GET'])]
+    public function show(int $id): JsonResponse
+    {
+        throw $this->createNotFoundException('Not implemented yet.');
     }
 }
