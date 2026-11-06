@@ -6,10 +6,12 @@ namespace App\Controller;
 
 use App\DTO\Payment\ProcessPaymentRequest;
 use App\Exception\IdempotencyConflictException;
+use App\Exception\OptimisticLockExhaustedException;
 use App\Exception\OrderNotOpenException;
 use App\Exception\OverpaymentException;
 use App\Repository\PaymentRepository;
 use App\Service\PaymentService;
+use Doctrine\ORM\OptimisticLockException;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpKernel\Attribute\MapRequestPayload;
@@ -43,6 +45,10 @@ final class PaymentController extends AbstractController
         } catch (OrderNotOpenException $e) {
             return $this->json(['error' => $e->getMessage()], 409);
         } catch (IdempotencyConflictException $e) {
+            return $this->json(['error' => $e->getMessage()], 409);
+        } catch (OptimisticLockException $e) {
+            return $this->json(['error' => 'Conflict: order was modified concurrently by another transaction.'], 409);
+        } catch (OptimisticLockExhaustedException $e) {
             return $this->json(['error' => $e->getMessage()], 409);
         }
 

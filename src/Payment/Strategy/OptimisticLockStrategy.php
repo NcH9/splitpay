@@ -10,14 +10,15 @@ use App\Entity\User;
 use App\Enum\OrderStatus;
 use App\Enum\PaymentMethod;
 use App\Exception\IdempotencyConflictException;
+use App\Exception\OptimisticLockExhaustedException;
 use App\Exception\OrderNotOpenException;
 use App\Exception\OverpaymentException;
 use App\Payment\PaymentResult;
 use App\Payment\PaymentStrategyInterface;
 use App\Repository\PaymentRepository;
 use Doctrine\ORM\EntityManagerInterface;
-use Doctrine\ORM\Exception\ORMException;
 use Doctrine\ORM\OptimisticLockException;
+use Doctrine\Persistence\ManagerRegistry;
 
 /**
  * Strategy 3 — Optimistic Lock (version-based conflict detection + retry).
@@ -25,23 +26,22 @@ use Doctrine\ORM\OptimisticLockException;
  * Does NOT block concurrent requests. Instead it detects conflicts at commit time
  * by comparing Order.version against the value read at the start of the attempt.
  * When Doctrine sees the row was modified by another transaction (version mismatch),
- * it throws OptimisticLockException. A retry loop re-reads fresh state and tries again.
- *
- * Key metrics for the benchmark:
- *   - retriesAttempted: how many conflicts were detected before success
- *   - Under low contention: 0 retries, throughput close to Baseline
- *   - Under high contention: many retries, potential exhaustion after MAX_RETRIES
- *
- * MAX_RETRIES = 3: balance between resilience and latency.
+ * it throws OptimisticLockException. A retry loop resets the closed EntityManager,
+ * re-reads fresh state from the database, and tries again up to MAX_RETRIES.
  */
 final class OptimisticLockStrategy implements PaymentStrategyInterface
 {
     public const int MAX_RETRIES = 3;
 
+    private EntityManagerInterface $em;
+
     public function __construct(
-        private EntityManagerInterface $em,
-        private PaymentRepository $paymentRepository,
-    ) {}
+        private readonly ManagerRegistry $registry,
+    ) {
+        /** @var EntityManagerInterface $em */
+        $em = $this->registry->getManager();
+        $this->em = $em;
+    }
 
     public function getName(): string
     {
@@ -60,10 +60,8 @@ final class OptimisticLockStrategy implements PaymentStrategyInterface
         $retries = 0;
 
         while (true) {
-            // On every retry, clear the identity map so we work with
-            // freshly loaded entities (not stale cached versions).
+            // Re-fetch entities using the active EntityManager
             if ($retries > 0) {
-                $this->em->clear();
                 $order = $this->em->find(Order::class, $orderId);
                 $user  = $this->em->find(User::class, $userId);
 
@@ -74,8 +72,9 @@ final class OptimisticLockStrategy implements PaymentStrategyInterface
 
             $this->em->beginTransaction();
             try {
-                // I5: idempotency — always check with fresh DB state
-                if ($this->paymentRepository->findOneBy(['idempotencyKey' => $idempotencyKey]) !== null) {
+                // I5: idempotency check with fresh DB state
+                $paymentRepo = $this->em->getRepository(Payment::class);
+                if ($paymentRepo->findOneBy(['idempotencyKey' => $idempotencyKey]) !== null) {
                     throw new IdempotencyConflictException($idempotencyKey);
                 }
 
@@ -96,10 +95,6 @@ final class OptimisticLockStrategy implements PaymentStrategyInterface
                 }
 
                 $this->em->persist($payment);
-
-                // flush() issues: UPDATE orders … WHERE id = ? AND version = ?
-                // If another transaction incremented version between our read and this flush,
-                // Doctrine throws OptimisticLockException.
                 $this->em->flush();
                 $this->em->commit();
 
@@ -107,22 +102,17 @@ final class OptimisticLockStrategy implements PaymentStrategyInterface
 
             } catch (OptimisticLockException $e) {
                 $this->rollbackSafely();
-                // Clear EM so the next iteration starts completely fresh
-                $this->em->clear();
 
                 ++$retries;
                 if ($retries >= self::MAX_RETRIES) {
-                    throw new \RuntimeException(
-                        sprintf(
-                            'Payment failed after %d retries due to concurrent modifications on order #%d.',
-                            $retries,
-                            $orderId,
-                        ),
-                        0,
-                        $e,
-                    );
+                    throw new OptimisticLockExhaustedException($orderId, $retries);
                 }
-                // Loop and retry with freshly loaded entities
+
+                // When flush() throws, Doctrine permanently closes the EntityManager.
+                // resetManager() reopens a fresh, functional EntityManager for the retry.
+                /** @var EntityManagerInterface $em */
+                $em = $this->registry->resetManager();
+                $this->em = $em;
             } catch (\Throwable $e) {
                 $this->rollbackSafely();
                 throw $e;

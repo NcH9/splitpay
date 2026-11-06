@@ -71,13 +71,22 @@ final class BaselineStrategy implements PaymentStrategyInterface
 
             $payment = new Payment($amountCents, $paymentMethod, $idempotencyKey, $user, $order);
 
-            $order->setPaidPriceCents($order->getPaidPriceCents() + $amountCents);
-            if ($order->isFullyPaid()) {
-                $order->setStatus(OrderStatus::Paid);
-            }
+            $newPaid = $order->getPaidPriceCents() + $amountCents;
+            $newStatus = $newPaid >= $order->getFullPriceCents() ? OrderStatus::Paid : $order->getStatus();
 
             $this->em->persist($payment);
             $this->em->flush();
+
+            // Unprotected direct SQL update: intentionally bypasses the ORM version check
+            // to simulate a classic read-modify-write race condition without locking.
+            $this->em->getConnection()->executeStatement(
+                'UPDATE orders SET paid_price_cents = :paid, status = :status WHERE id = :id',
+                ['paid' => $newPaid, 'status' => $newStatus->value, 'id' => $order->getId()]
+            );
+
+            $order->setPaidPriceCents($newPaid);
+            $order->setStatus($newStatus);
+
             $this->em->commit();
 
             return new PaymentResult($payment, $this->getName());
