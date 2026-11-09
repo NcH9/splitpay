@@ -262,6 +262,30 @@ final class StrategyIntegrationTest extends KernelTestCase
         $this->mutex->processPayment($order, $user, 1_000, PaymentMethod::Card, $key);
     }
 
+    public function testMutexRefreshesStaleOrderStateAfterAcquiringLock(): void
+    {
+        [$user, $order] = $this->createUserAndOrder(5_000);
+
+        // Simulate another process updating the order in the database behind our back:
+        // We modify DB directly via connection to simulate a committed change from another worker.
+        $this->em->getConnection()->executeStatement(
+            'UPDATE orders SET paid_price_cents = 2000, version = version + 1 WHERE id = :id',
+            ['id' => $order->getId()]
+        );
+
+        // At this point, the in-memory $order entity has paidPriceCents = 0 and version = 1.
+        self::assertSame(0, $order->getPaidPriceCents());
+
+        // Process a payment of 3_000 via mutex.
+        // If it did NOT refresh, it would try to set paidPriceCents = 0 + 3000 = 3000 and fail on version mismatch.
+        // With refresh(), it sees 2_000, adds 3_000 -> 5_000, marks Paid, and succeeds!
+        $result = $this->mutex->processPayment($order, $user, 3_000, PaymentMethod::Card, $this->key());
+
+        self::assertSame(3_000, $result->payment->getAmountCents());
+        self::assertSame(5_000, $order->getPaidPriceCents());
+        self::assertSame(OrderStatus::Paid, $order->getStatus());
+    }
+
     // ─── Atomic ───────────────────────────────────────────────────────────────
 
     public function testAtomicProcessesValidPayment(): void

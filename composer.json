@@ -5,6 +5,7 @@
     "prefer-stable": true,
     "require": {
         "php": ">=8.4",
+        "ext-amqp": "*",
         "ext-ctype": "*",
         "ext-iconv": "*",
         "doctrine/doctrine-bundle": "^3.3",
@@ -17,10 +18,12 @@
         "symfony/flex": "^2",
         "symfony/framework-bundle": "8.1.*",
         "symfony/lock": "8.1.*",
+        "symfony/messenger": "8.1.*",
         "symfony/property-access": "8.1.*",
         "symfony/property-info": "8.1.*",
         "symfony/runtime": "8.1.*",
         "symfony/serializer": "8.1.*",
+        "symfony/twig-bundle": "8.1.*",
         "symfony/validator": "8.1.*",
         "symfony/yaml": "8.1.*"
     },

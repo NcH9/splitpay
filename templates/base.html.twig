@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}SplitPay — Сервіс спліт-платежів{% endblock %}</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 128 128%22><text y=%221.2em%22 font-size=%2296%22>💳</text></svg>">
+
+    {# Bootstrap 5.3 & Bootstrap Icons via CDN #}
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+
+    <style>
+        :root {
+            --sp-primary: #0d6efd;
+            --sp-dark: #1e293b;
+            --sp-bg: #f8fafc;
+        }
+        body {
+            background-color: var(--sp-bg);
+            color: #334155;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .main-content {
+            flex: 1 0 auto;
+        }
+        .navbar-brand {
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+        .card {
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.05);
+            border-radius: 0.75rem;
+        }
+        .card-header {
+            background-color: #fff;
+            border-bottom: 1px solid #e2e8f0;
+            font-weight: 600;
+        }
+        .badge-strategy {
+            font-family: monospace;
+            font-size: 0.85em;
+        }
+        .mono {
+            font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+    </style>
+    {% block stylesheets %}{% endblock %}
+</head>
+<body>
+    {# Навігація #}
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top shadow-sm">
+        <div class="container-xl">
+            <a class="navbar-brand d-flex align-items-center gap-2" href="{{ path('web_dashboard') }}">
+                <i class="bi bi-wallet2 text-primary fs-4"></i>
+                <span>SplitPay</span>
+                <span class="badge bg-secondary-subtle text-light border border-secondary fw-normal fs-6">Symfony 8.1</span>
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarMain">
+                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                    <li class="nav-item">
+                        <a class="nav-link {% if app.request.attributes.get('_route') starts with 'web_dashboard' or app.request.attributes.get('_route') starts with 'web_order' %}active{% endif %}" 
+                           href="{{ path('web_dashboard') }}">
+                            <i class="bi bi-speedometer2 me-1"></i> Дашборд і Замовлення
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if app.request.attributes.get('_route') starts with 'web_benchmark' %}active{% endif %}" 
+                           href="{{ path('web_benchmark') }}">
+                            <i class="bi bi-cpu me-1"></i> Бенчмарк і Стратегії
+                        </a>
+                    </li>
+                </ul>
+
+                {# Швидкі дії #}
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-light btn-sm" data-bs-toggle="modal" data-bs-target="#createUserModal">
+                        <i class="bi bi-person-plus me-1"></i> + Користувач
+                    </button>
+                    <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#createOrderModal">
+                        <i class="bi bi-cart-plus me-1"></i> + Замовлення
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    {# Основний контент #}
+    <main class="main-content py-4">
+        <div class="container-xl">
+            {# Flash-повідомлення #}
+            {% for label, messages in app.flashes %}
+                {% for message in messages %}
+                    <div class="alert alert-{{ label == 'error' ? 'danger' : label }} alert-dismissible fade show shadow-sm" role="alert">
+                        {{ message|raw }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Закрити"></button>
+                    </div>
+                {% endfor %}
+            {% endfor %}
+
+            {% block body %}{% endblock %}
+        </div>
+    </main>
+
+    {# Швидке створення користувача (Modal) #}
+    <div class="modal fade" id="createUserModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form action="{{ path('web_user_create') }}" method="POST">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="bi bi-person-plus me-2"></i>Новий користувач</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label for="userName" class="form-label">Ім'я користувача</label>
+                            <input type="text" class="form-control" id="userName" name="name" required placeholder="Наприклад: Іван Петренко">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Скасувати</button>
+                        <button type="submit" class="btn btn-primary">Створити</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    {# Швидке створення замовлення (Modal) #}
+    <div class="modal fade" id="createOrderModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form action="{{ path('web_order_create') }}" method="POST">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="bi bi-cart-plus me-2"></i>Нове замовлення для спліту</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label for="orderName" class="form-label">Найменування / Опис спліту</label>
+                            <input type="text" class="form-control" id="orderName" name="name" required placeholder="Наприклад: Обід з колегами">
+                        </div>
+                        <div class="mb-3">
+                            <label for="orderPrice" class="form-label">Повна сума ($)</label>
+                            <div class="input-group">
+                                <span class="input-group-text">$</span>
+                                <input type="number" step="0.01" min="0.01" class="form-control" id="orderPrice" name="full_price_dollars" required placeholder="200.00">
+                            </div>
+                            <div class="form-text">Сума автоматично переводиться в центи для цілочисельних фінансових розрахунків.</div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="orderUserId" class="form-label">Творець (User ID)</label>
+                            <input type="number" class="form-control" id="orderUserId" name="user_id" required placeholder="ID користувача (наприклад, 1)">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Скасувати</button>
+                        <button type="submit" class="btn btn-primary">Створити замовлення</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    {# Футер #}
+    <footer class="bg-white border-top py-3 mt-auto">
+        <div class="container-xl d-flex flex-wrap justify-content-between align-items-center text-muted small">
+            <div>
+                <strong>SplitPay</strong> &copy; {{ "now"|date("Y") }} &bull; High-Contention Concurrent Payment System
+            </div>
+            <div>
+                PHP 8.4 &bull; Symfony 8.1 &bull; PostgreSQL 16 &bull; Docker Compose
+            </div>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    {% block javascripts %}{% endblock %}
+</body>
+</html>

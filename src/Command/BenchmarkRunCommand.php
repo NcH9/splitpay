@@ -19,7 +19,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 #[AsCommand(name: 'app:benchmark:run', description: 'Stress-test payment strategies and audit database consistency.')]
 final class BenchmarkRunCommand extends Command
 {
-    private const STRATEGIES = ['baseline', 'pessimistic', 'optimistic', 'symfony_lock', 'atomic'];
+    private const STRATEGIES = ['baseline', 'pessimistic', 'optimistic', 'mutex', 'atomic'];
 
     public function __construct(
         private readonly EntityManagerInterface $entityManager,
@@ -31,7 +31,7 @@ final class BenchmarkRunCommand extends Command
     protected function configure(): void
     {
         $this
-            ->addOption('strategy', null, InputOption::VALUE_REQUIRED, 'Strategy to benchmark: baseline, pessimistic, optimistic, symfony_lock, atomic, or all.', 'baseline')
+            ->addOption('strategy', null, InputOption::VALUE_REQUIRED, 'Strategy to benchmark: baseline, pessimistic, optimistic, mutex, atomic, or all.', 'baseline')
             ->addOption('requests', null, InputOption::VALUE_REQUIRED, 'Number of HTTP requests.', '50')
             ->addOption('concurrency', null, InputOption::VALUE_REQUIRED, 'Maximum concurrent HTTP requests.', '10')
             ->addOption('order-full-price', null, InputOption::VALUE_REQUIRED, 'Order total in cents.', '10000')
@@ -49,7 +49,7 @@ final class BenchmarkRunCommand extends Command
         $format = (string) $input->getOption('format');
 
         if (!in_array($strategy, [...self::STRATEGIES, 'all'], true)) {
-            $output->writeln('<error>Invalid strategy. Choose baseline, pessimistic, optimistic, symfony_lock, atomic, or all.</error>');
+            $output->writeln('<error>Invalid strategy. Choose baseline, pessimistic, optimistic, mutex, atomic, or all.</error>');
 
             return Command::INVALID;
         }

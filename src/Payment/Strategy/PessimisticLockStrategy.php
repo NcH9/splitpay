@@ -15,8 +15,9 @@ use App\Exception\OverpaymentException;
 use App\Payment\PaymentResult;
 use App\Payment\PaymentStrategyInterface;
 use App\Repository\PaymentRepository;
-use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\DBAL\LockMode;
+use Doctrine\ORM\EntityManagerInterface;
 
 /**
  * Strategy 2 — Pessimistic Lock (database row-level write lock).
@@ -92,6 +93,9 @@ final class PessimisticLockStrategy implements PaymentStrategyInterface
             $this->em->commit(); // Releases the FOR UPDATE row lock
 
             return new PaymentResult($payment, $this->getName());
+        } catch (UniqueConstraintViolationException) {
+            $this->rollbackSafely();
+            throw new IdempotencyConflictException($idempotencyKey);
         } catch (\Throwable $e) {
             $this->rollbackSafely();
             throw $e;

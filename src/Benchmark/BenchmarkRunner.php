@@ -26,7 +26,7 @@ class BenchmarkRunner
             throw new \InvalidArgumentException('Requests, concurrency, and payment amount must be positive integers.');
         }
 
-        $endpointStrategy = $strategy === 'symfony_lock' ? 'mutex' : $strategy;
+        $endpointStrategy = $strategy;
         $startedAt = hrtime(true);
         $latencies = [];
         $statusCounts = ['201' => 0, '409' => 0, '422' => 0, '5xx' => 0];

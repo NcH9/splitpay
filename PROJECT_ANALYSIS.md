@@ -1,303 +1,247 @@
-```markdown
-# SplitPay — Анализ проекта (материал для контекста агента)
+# SplitPay — Анализ проекта (Актуальное состояние кодовой базы)
 
-> Назначение документа: дать агенту-разработчику полную и точную картину текущего состояния
-> проекта SplitPay — стек, структуру, доменную модель, конфигурацию, инфраструктуру и текущий
-> уровень реализации — чтобы он мог продолжить работу без повторного исследования кодовой базы.
+> **Назначение документа:** предоставить разработчику или AI-агенту полную, точную и актуальную картину текущего состояния проекта **SplitPay** — архитектуру, стек, доменную модель, стратегии конкурентности, API, бенчмарки и инфраструктуру.
 
 ---
 
 ## 1. Общее резюме
 
-**SplitPay** — это скелет Symfony-приложения (Symfony 8.1, PHP не ниже 8.4) с подключённым Doctrine
-ORM и PostgreSQL. На текущий момент это **каркас предметной области, а не работающий продукт**:
+**SplitPay** — это высоконадежное приложение на **Symfony 8.1** и **PHP 8.4** с подключенным **Doctrine ORM 3.7** и **PostgreSQL 16**, разработанное для изучения и сравнительного анализа механизмов синхронизации при конкурентных финансовых операциях над общим заказом.
 
-- Есть 3 entity: `User`, `Order`, `Payment` с корректными двунаправленными связями.
-- Есть 2 контроллера (`UserController`, `OrderController`), которые являются **сгенерированными
-  заглушками** (`make:controller`) и возвращают статический JSON.
-- Репозитории — **пустые заготовки** `ServiceEntityRepository` без кастомных методов.
-- Есть 2 миграции БД, создающие таблицы.
-- Есть 2 тривиальных HTTP-теста, проверяющих только 200-ответ заглушек.
-- **Бизнес-логика (сервисы, распределение платежей, расчёт долгов) отсутствует полностью.**
-
-По названию и модели данных проект предназначен для **совместной оплаты заказов** («split pay»):
-пользователи делают взносы (`Payment`) в общий заказ (`Order`), а система, предположительно,
-считает, кто сколько внёс и кто кому должен доплатить. Эта логика пока не реализована.
+Архитектура проекта полностью реализована и протестирована:
+- **Доменная модель:** Сущности `User`, `Order`, `Payment` со строгими инвариантами, целочисленным учетом денежных величин в минорных единицах (`amountCents`, `fullPriceCents`, `paidPriceCents`) и перечислениями (`OrderStatus`, `PaymentMethod`).
+- **5 стратегий конкурентности:** Реализованы по паттерну Strategy (`baseline`, `pessimistic`, `optimistic`, `mutex`, `atomic`).
+- **REST API:** Полноценный презентационный слой на тонких контроллерах с валидацией через `#[MapRequestPayload]` и DTO.
+- **Инструментарий бенчмаркинга:** Консольная команда `app:benchmark:run`, многопоточный runner на `curl_multi` и независимый SQL-аудитор целостности `ConsistencyAuditor`.
+- **Автоматические тесты:** 47 тестов (100% passing), включая интеграционные тесты стратегий в реальной PostgreSQL и стресс-тесты параллельных HTTP-запросов через Nginx к PHP-FPM.
 
 ---
 
-## 2. Стек и версии
+## 2. Стек и установленные зависимости
 
-Из `composer.json`:
+Спецификация из `composer.json` и `symfony.lock`:
 
-| Компонент | Версия |
-|---|---|
-| PHP | не ниже 8.4 |
-| Symfony (framework-bundle, console, dotenv, runtime, yaml) | 8.1.* |
-| doctrine/doctrine-bundle | ^3.3 |
-| doctrine/doctrine-migrations-bundle | ^4.0 |
-| doctrine/orm | ^3.7 |
-| symfony/flex | ^2 |
-| symfony/maker-bundle (dev) | ^1.68 |
-
-Фактически установлено (`symfony.lock`): doctrine-bundle 3.3, migrations-bundle 4.0,
-console/framework-bundle/routing 8.1, flex 2.11, maker-bundle 1.68.
-
-**Чего НЕ установлено (важно):**
-- Twig / шаблоны — нет (server-rendered интерфейса нет).
-- API Platform — нет.
-- Symfony Serializer — нет (контроллеры используют только `AbstractController::json()`).
-- Symfony Validator, Form — нет.
-- SecurityBundle — нет (аутентификации/авторизации нет).
-- Messenger, Lock, Mailer, HttpClient, Scheduler — нет.
-
-`extra.symfony.allow-contrib: false` и `require: 8.1.*` — Flex ограничен официальными рецептами.
+| Компонент / Пакет | Версия | Назначение |
+|---|---|---|
+| **PHP** | `>= 8.4` (в контейнере 8.4.25) | Современные возможности: Typed Constants, Property Hooks, Constructor Promotion |
+| **Symfony Framework Bundle** | `8.1.*` | Ядро приложения, MicroKernel |
+| **Symfony Console** | `8.1.*` | CLI команды управления и бенчмаркинга |
+| **Symfony Serializer** | `8.1.*` | Преобразование JSON ↔ DTO |
+| **Symfony Validator** | `8.1.*` | Валидация входных данных DTO (`#[Assert\...]`) |
+| **Symfony Lock** | `8.1.*` | Распределенные мьютексы (`LockFactory`) для стратегии `mutex` |
+| **Symfony Dotenv & Yaml** | `8.1.*` | Загрузка конфигурации и переменных окружения |
+| **Doctrine ORM** | `^3.7` | Объектно-реляционное отображение, `#[ORM\Version]` |
+| **Doctrine Bundle** | `^3.3` | Интеграция Doctrine в Symfony DI |
+| **Doctrine Migrations Bundle** | `^4.0` | Управление версионированием схемы БД |
+| **PostgreSQL** | `16` (Alpine) | Реляционная СУБД, поддержка row-level locks и atomic conditional update |
+| **PHPUnit** (dev) | `^13.4` | Модульное, интеграционное и стресс-тестирование |
+| **Symfony BrowserKit & CssSelector** | `8.1.*` | Функциональное тестирование HTTP API (`WebTestCase`) |
 
 ---
 
-## 3. Структура проекта
+## 3. Архитектура и структура директорий
+
+Кодовая база структурирована по слоям (Clean Architecture / DDD-lite):
+
+```text
+splitpay/
+├── bin/
+│   ├── console                      # CLI Symfony
+│   └── phpunit                      # Раннер тестов
+├── config/
+│   ├── packages/                    # Конфигурация framework, doctrine, cache, lock
+│   ├── routes.yaml                  # Автоподключение маршрутов из атрибутов
+│   └── services.yaml                # autowire/autoconfigure для App
+├── docker/
+│   └── nginx/default.conf           # Конфигурация Nginx: FastCGI к php:9000
+├── migrations/
+│   ├── Version20260918162837.php    # Первоначальная миграция
+│   ├── Version20261007193107.php    # Промежуточная схема
+│   └── Version20261102130644.php    # Переход на центы, индексы, idempotency_key, version
+├── src/
+│   ├── Benchmark/                   # Инфраструктура бенчмарка и аудита
+│   │   ├── AuditResult.php          # DTO результата SQL-аудита
+│   │   ├── BenchmarkResult.php      # DTO результатов прогона (RPS, латентность, коды ответов)
+│   │   ├── BenchmarkRunner.php      # Асинхронный генератор нагрузки на curl_multi
+│   │   └── ConsistencyAuditor.php   # Независимый верификатор согласованности данных в БД
+│   ├── Command/
+│   │   └── BenchmarkRunCommand.php  # Консольная команда app:benchmark:run
+│   ├── Controller/
+│   │   ├── OrderController.php      # POST /orders, GET /orders/{id}
+│   │   ├── PaymentController.php    # POST /payments/{orderId}, GET /payments/{id}
+│   │   └── UserController.php       # POST /users, GET /users/{id}
+│   ├── DTO/
+│   │   ├── Order/CreateOrderRequest.php
+│   │   ├── Payment/ProcessPaymentRequest.php
+│   │   └── User/CreateUserRequest.php
+│   ├── Entity/
+│   │   ├── Order.php                # Заказ (полная цена, оплачено, статус, версия)
+│   │   ├── Payment.php              # Платеж (сумма, метод, ключ идемпотентности, дата)
+│   │   └── User.php                 # Пользователь/плательщик
+│   ├── Enum/
+│   │   ├── OrderStatus.php          # open | paid | cancelled
+│   │   └── PaymentMethod.php        # card | cash
+│   ├── Exception/
+│   │   ├── IdempotencyConflictException.php       # HTTP 409
+│   │   ├── OptimisticLockExhaustedException.php   # HTTP 409
+│   │   ├── OrderNotOpenException.php              # HTTP 409
+│   │   └── OverpaymentException.php               # HTTP 422
+│   ├── Payment/
+│   │   ├── PaymentResult.php
+│   │   ├── PaymentStrategyInterface.php           # Единый контракт стратегий
+│   │   ├── StrategyRegistry.php                   # DI-реестр стратегий (#[AutowireIterator])
+│   │   └── Strategy/
+│   │       ├── AtomicConditionalUpdateStrategy.php # Стратегия 5: Атомарный SQL UPDATE
+│   │       ├── BaselineStrategy.php               # Стратегия 1: Без блокировок (контрольная)
+│   │       ├── OptimisticLockStrategy.php         # Стратегия 3: #[ORM\Version] + Retry
+│   │       ├── PessimisticLockStrategy.php        # Стратегия 2: SELECT ... FOR UPDATE
+│   │       └── SymfonyLockStrategy.php            # Стратегия 4: Мьютекс на уровне приложения
+│   ├── Repository/
+│   │   ├── OrderRepository.php
+│   │   ├── PaymentRepository.php
+│   │   └── UserRepository.php
+│   ├── Service/
+│   │   ├── OrderService.php
+│   │   ├── PaymentService.php       # Оркестратор проверки существования и делегирования
+│   │   └── UserService.php
+│   └── Kernel.php
+└── tests/                           # 47 автоматических тестов
+    ├── Benchmark/ConsistencyAuditorTest.php
+    ├── Command/BenchmarkRunCommandTest.php
+    ├── Controller/OrderControllerTest.php
+    ├── Controller/PaymentControllerTest.php
+    ├── Controller/UserControllerTest.php
+    ├── Payment/ConcurrencyStressTest.php
+    ├── Payment/Strategy/StrategyIntegrationTest.php
+    └── Service/PaymentServiceTest.php
 ```
 
-splitpay/ |-- AGENTS.md # инструкции проекта (Symfony best practices) |-- CLAUDE.md # @AGENTS.md |-- composer.json / composer.lock |-- symfony.lock |-- Dockerfile # php:8.4-fpm + pdo_pgsql + composer |-- compose.yaml # php-fpm, nginx (:8080), postgres:16 |-- compose.override.yaml # переопределение портов БД |-- .env # дефолты (коммитится) |-- bin/console |-- config/ | |-- bundles.php | |-- preload.php | |-- reference.php # авто-сгенерированная схема конфигов | |-- routes.yaml # импорт routing.controllers | |-- routes/framework.yaml # /_error во dev | |-- services.yaml # autowire/autoconfigure для App | |-- packages/ | |-- cache.yaml | |-- doctrine.yaml | |-- doctrine_migrations.yaml | |-- framework.yaml | |-- routing.yaml |-- docker/nginx/default.conf # root=/var/www/html/public, fastcgi php:9000 |-- migrations/ | |-- Version20260918162837.php # создаёт таблицу "user" | |-- Version20260920113751.php # создаёт "order", payment + FK |-- public/index.php # front controller (runtime) |-- src/ | |-- Kernel.php # MicroKernelTrait, env: prod|dev|test | |-- Controller/ | | |-- OrderController.php # GET /order - JSON-заглушка | | |-- UserController.php # GET /user - JSON-заглушка | |-- Entity/ | | |-- Order.php | | |-- Payment.php | | |-- User.php | |-- Repository/ | |-- OrderRepository.php | |-- PaymentRepository.php | |-- UserRepository.php |-- tests/Controller/ |-- OrderControllerTest.php # GET /order - 200 |-- UserControllerTest.php # GET /user - 200
+---
 
-```javascript
+## 4. Доменная модель и бизнес-инварианты
+
+### Сущности (Таблицы PostgreSQL)
+
+1. **`User` (таблица `users`):**
+   - `id` (int, PK)
+   - `name` (string, 2–255 символов)
+   - `createdAt` (DateTimeImmutable)
+   - Связи: `orders` (OneToMany), `payments` (OneToMany)
+
+2. **`Order` (таблица `orders`):**
+   - `id` (int, PK)
+   - `name` (string)
+   - `fullPriceCents` (int, положительное целое) — общая стоимость заказа
+   - `paidPriceCents` (int) — денормализованная сумма подтвержденных платежей
+   - `status` (OrderStatus: `open`, `paid`, `cancelled`)
+   - `version` (int, `#[ORM\Version]`) — версионный счетчик для оптимистической блокировки
+   - `createdAt`, `updatedAt` (DateTimeImmutable)
+   - `user_id` (ManyToOne, владелец заказа)
+   - Методы: `getRemainingCents()`, `isFullyPaid()`, `canAcceptPayment()`
+
+3. **`Payment` (таблица `payments`):**
+   - `id` (int, PK)
+   - `amountCents` (int, > 0)
+   - `paymentMethod` (PaymentMethod: `card`, `cash`)
+   - `idempotencyKey` (string, max 255, **UNIQUE INDEX**) — глобальный ключ идемпотентности
+   - `createdAt` (DateTimeImmutable)
+   - `user_id` (ManyToOne, плательщик)
+   - `order_id` (ManyToOne, оплачиваемый заказ)
+
+### Бизнес-инварианты (Core Research Invariants)
+
+- **I1 (No Overpayment):** Сумма всех успешных платежей заказа никогда не должна превышать `order.fullPriceCents`.
+- **I2 (Data Consistency):** Поле `order.paidPriceCents` обязано строго равняться реальной сумме `SUM(payments.amountCents)` в БД.
+- **I3 (Balance Check):** Платеж принимается только если `amountCents <= remainingCents` и заказ находится в статусе `open`.
+- **I4 (No Lost Updates):** Параллельные транзакции не должны перезаписывать результаты друг друга.
+- **I5 (Global Idempotency):** Повторная отправка запроса с тем же `idempotencyKey` не приводит к повторному списанию и возвращает `409 Conflict`.
 
 ---
 
-## 4. Доменная модель (Doctrine ORM, атрибуты)
+## 5. Стратегии конкурентности (Payment Strategies)
 
-Связи (по факту — одна «звезда» вокруг `User`):
+Все стратегии реализуют общий интерфейс `PaymentStrategyInterface` и автоматически собираются через тег `app.payment_strategy` в `StrategyRegistry`.
+
+| Идентификатор | Класс | Механизм синхронизации | Уровень защиты | Особенности поведения |
+|---|---|---|---|---|
+| **`baseline`** | `BaselineStrategy` | Отсутствует | ❌ Нет (Контрольная группа) | Read-then-write без блокировок. При конкурентности демонстрирует race condition, overpayment и потерю обновлений. |
+| **`pessimistic`** | `PessimisticLockStrategy` | `LockMode::PESSIMISTIC_WRITE` | ✅ База данных (Row Lock) | Выполняет `SELECT ... FOR UPDATE`. Очередь запросов сериализуется на уровне строки PostgreSQL. |
+| **`optimistic`** | `OptimisticLockStrategy` | `#[ORM\Version]` + Retry | ✅ Слой ORM (Doctrine) | Проверяет совпадение версии при `flush()`. При конфликте ловит `OptimisticLockException`, сбрасывает Identity Map и делает до 3 попыток. |
+| **`mutex`** | `SymfonyLockStrategy` | `Symfony\Component\Lock` | ✅ Уровень приложения | Захватывает мьютекс `order:{id}` через `LockFactory` (flock/redis), открывает транзакцию и принудительно вызывает `$em->refresh($order)` для исключения застарелого чтения. |
+| **`atomic`** | `AtomicConditionalUpdateStrategy` | Условный атомарный SQL `UPDATE` | ✅ Ядро СУБД (SQL Statement) | Выполняет атомарный `UPDATE orders SET paid_price_cents = paid_price_cents + :amount WHERE id = :id AND status = 'open' AND paid_price_cents + :amount <= full_price_cents`. Максимальный RPS. |
+
+---
+
+## 6. HTTP API и маршрутизация
+
+Все эндпоинты типизированы, валидируются через DTO и возвращают JSON:
+
+```text
+POST /users                 Создание пользователя (201 Created)
+GET  /users/{id}            Просмотр пользователя (200 OK / 404)
+POST /orders                Создание заказа (201 Created)
+GET  /orders/{id}           Просмотр заказа с балансом и статусом (200 OK / 404)
+POST /payments/{orderId}    Проведение платежа по выбранной стратегии (201 Created)
+GET  /payments/{id}         Просмотр записи платежа (200 OK / 404)
 ```
 
-User 1 --(has many)--> Order 1 --(has many)--> Payment Payment --(belongs to)--> User (кто платил) Payment --(belongs to)--> Order (в какой заказ)
-
-````javascript
-
-- `User.orders`   — OneToMany (mappedBy `Order.user`)
-- `User.payments` — OneToMany (mappedBy `Payment.user`)
-- `Order.user`    — ManyToOne (JoinColumn NOT NULL, inversedBy `orders`)
-- `Order.payments`— OneToMany (mappedBy `Payment.order`)
-- `Payment.user`  — ManyToOne (JoinColumn NOT NULL, inversedBy `payments`)
-- `Payment.order` — ManyToOne (JoinColumn NOT NULL, inversedBy `payments`)
-
-### User (`src/Entity/User.php`)
-
-| Поле | Тип | Примечание |
-|---|---|---|
-| `id` | `?int` | PK, auto (identity) |
-| `username` | `?string` | length 255, NOT NULL |
-| `orders` | Collection of Order | OneToMany |
-| `payments` | Collection of Payment | OneToMany |
-
-Проброс связей: `addOrder()` / `removeOrder()`, `addPayment()` / `removePayment()` — с корректной
-синхронизацией обратной стороны и обнулением владельца (`setUser(null)`).
-
-### Order (`src/Entity/Order.php`)
-
-Таблица экранирована: `#[ORM\Table(name: 'orders')]` (order — зарезервированное слово SQL).
-
-| Поле | Тип | Примечание |
-|---|---|---|
-| `id` | `?int` | PK, auto |
-| `full_price` | `?float` | полная стоимость заказа, NOT NULL, DOUBLE |
-| `paid_price` | `?float` | уже оплаченная сумма, NOT NULL, DOUBLE |
-| `user` | `?User` | ManyToOne, NOT NULL (владелец/инициатор заказа) |
-| `payments` | Collection of Payment | OneToMany |
-
-Проброс: `addPayment()` (устанавливает `payment.order`), `removePayment()`.
-
-### Payment (`src/Entity/Payment.php`)
-
-Таблица: `payments`.
-
-| Поле | Тип | Примечание |
-|---|---|---|
-| `id` | `?int` | PK, auto |
-| `paid_amount` | `?float` | сумма взноса, NOT NULL, DOUBLE |
-| `user` | `?User` | ManyToOne, NOT NULL (кто заплатил) |
-| `order` | `?Order` | ManyToOne, NOT NULL (в какой заказ) |
-
-**Наблюдения по модели:**
-- Entity — **анемичные** (только геттеры/сеттеры, без доменных инвариантов).
-- Нет timestamps (`createdAt`/`updatedAt`), нет статусов, нет валюты.
-- Нет валидационных атрибутов (`#[Assert...]`) — Validator вообще не установлен.
-- `paid_price` в `Order` дублирует агрегат по `Payment.paid_amount` — при реализации логики
-  нужно решить, поддерживать ли его вручную или вычислять (риск рассинхронизации).
-- Нет проверок вида `paid_price` не больше `full_price`, сумм больше нуля и т.п.
+### Коды ошибок API:
+- **`404 Not Found`**: Не существует указанный `userId`, `orderId` или `paymentId`.
+- **`409 Conflict`**: Заказ закрыт (`OrderNotOpenException`), дубликат ключа идемпотентности (`IdempotencyConflictException`), либо исчерпан лимит повторов оптимистической блокировки (`OptimisticLockExhaustedException`).
+- **`422 Unprocessable Entity`**: Ошибка валидации DTO (невалидный email, отрицательная сумма, некорректный enum) или попытка переплаты сверх остатка (`OverpaymentException`).
 
 ---
 
-## 5. Слой HTTP (контроллеры)
+## 7. Бенчмаркинг и верификация (Benchmark & Auditing)
 
-Оба контроллера — final, наследуют `AbstractController`, маршруты через атрибут `#[Route]`.
-Это **дефолтный вывод `make:controller`**, а не реальная логика:
+Проект содержит встроенный модуль экспериментального нагрузочного тестирования:
 
-```php
-// OrderController
-#[Route('/order', name: 'app_order')]
-public function index(): JsonResponse
-{
-    return $this->json([
-        'message' => 'Welcome to your new controller!',
-        'path' => 'src/Controller/OrderController.php',
-    ]);
-}
-````
-
-`UserController` идентичен по структуре: `GET /user`, имя `app_user`.
-
-Маршруты (полный список на текущий момент):
-
-| Метод | Путь | Имя | Контроллер | |---|---|---|---| | GET | `/user` | `app_user` | `UserController::index` | | GET | `/order` | `app_order` | `OrderController::index` | | (dev) | `/_error*` | — | FrameworkBundle errors |
-
-Импорт маршрутов: `config/routes.yaml` — resource `routing.controllers` (все `#[Route]` в `src/Controller` подхватываются автоматически). YAML/XML-роутинга нет — только атрибуты.
+- **Консольная команда:** `php bin/console app:benchmark:run`
+  - Параметры: `--strategy` (`baseline`, `pessimistic`, `optimistic`, `mutex`, `atomic`, `all`), `--requests`, `--concurrency`, `--order-full-price`, `--payment-amount`, `--format` (`table`, `markdown`, `json`).
+- **`BenchmarkRunner`:** Создает сценарий и параллельно отправляет пачки запросов через `curl_multi` в Nginx. Рассчитывает время, RPS, распределение кодов и перцентили задержек (`P50`, `P95`, `P99`).
+- **`ConsistencyAuditor`:** Подключается напрямую к БД и выполняет независимый SQL-аудит:
+  - Сравнивает `orders.paid_price_cents` и `SUM(payments.amount_cents)`.
+  - Фиксирует факты рассинхронизации (`isConsistent`) и переплаты (`isOverpaid`).
 
 ---
 
-## 6. Слой доступа к данным (репозитории)
+## 8. Инфраструктура (Docker)
 
-Все три репозитория — пустые `ServiceEntityRepository`-заготовки, сгенерированные Doctrine:
+Окружение разворачивается через Docker Compose:
 
-```php
-class OrderRepository extends ServiceEntityRepository
-{
-    public function __construct(ManagerRegistry $registry)
-    {
-        parent::__construct($registry, Order::class);
-    }
-    // ...закомментированные примеры findByExampleField / findOneBySomeField
-}
-```
-
-Кастомных запросов (QueryBuilder/DQL) __нет__. `PaymentRepository` и `UserRepository` — аналогично.
+- **`php`:** PHP 8.4 FPM (`php:8.4-fpm`), расширения `pdo_pgsql`, `amqp`, `opcache`. Том проекта примонтирован в `/var/www/html`.
+- **`nginx`:** Nginx 1.25+ Alpine, проксирует HTTP-трафик на порт 9000 PHP-FPM. Публикует порт **8080** на хосте.
+- **`database`:** PostgreSQL 16 Alpine. Внутренний порт 5432, БД `splitpay`.
 
 ---
 
-## 7. База данных и миграции
+## 9. Автоматическое тестирование
 
-- СУБД: __PostgreSQL 16__ (`DATABASE_URL="postgresql://splitpay:secret@database:5432/splitpay?serverVersion=16&charset=utf8"`).
-- Doctrine naming strategy: `underscore`; для PostgreSQL identity generation предпочтён `identity`.
-- В `when@test` включён суффикс БД `_test` (`dbname_suffix: '_test%env(default::TEST_TOKEN)%'`).
-- В `when@prod` настроены пулы кеша запросов/результатов.
-
-Миграции:
-
-1. `Version20260918162837` — `CREATE TABLE "user" (id IDENTITY, username VARCHAR(255))`.
-2. `Version20260920113751` — `CREATE TABLE "order" (... user_id FK)`, `CREATE TABLE payment (... user_id, order_id FK)` + индексы и внешние ключи.
-
-> ВНИМАНИЕ — __рассинхронизация имён таблиц:__ миграции создают таблицы `"user"` и `"order"` (единственное число), тогда как entity `User` и `Order` маппятся на `users` и `orders` (множественное число; `Order` переопределён через `#[ORM\Table]`). __Имена таблиц в миграциях не соответствуют маппингу entity__ — это потенциальный баг, который нужно проверить через `doctrine:schema:validate` и согласовать (исправить миграцию или маппинг).
+Тестовый набор (`tests/`) включает **47 тестов (121 assertion)**:
+1. `tests/Controller/`: Тесты эндпоинтов, валидации схем, кодов 200, 201, 404, 409, 422.
+2. `tests/Payment/Strategy/StrategyIntegrationTest.php`: 22 интеграционных теста, проверяющих каждую стратегию изолированно в тестовой БД.
+3. `tests/Payment/ConcurrencyStressTest.php`: 5 параллельных стресс-тестов на реальном пуле PHP-FPM, подтверждающих сбой `baseline` и абсолютную математическую согласованность `pessimistic`, `optimistic`, `mutex` и `atomic`.
+4. `tests/Benchmark/`: Тестирование аудитора целостности и расчетов перцентилей.
+5. `tests/Command/`: Проверка консольной команды бенчмарка.
 
 ---
 
-## 8. Конфигурация приложения
-
-- `config/bundles.php`: FrameworkBundle, DoctrineBundle, DoctrineMigrationsBundle — all; MakerBundle — dev.
-- `config/services.yaml`: `_defaults` с `autowire: true`, `autoconfigure: true`; автоподключение сервисов из `src/` (`App` — `../src/`). Кастомных сервисов/биндингов нет.
-- `config/packages/framework.yaml`: `secret: %env(APP_SECRET)%`, `session: true`; в `when@test` — `test: true` + mock-file storage.
-- `config/packages/cache.yaml`: пулы не настроены (дефолт — filesystem).
-- `config/packages/routing.yaml`: `default_uri: %env(DEFAULT_URI)%`.
-- `Kernel.php`: `MicroKernelTrait`, допустимые окружения `prod|dev|test`.
-- `.env` (коммитится, только дефолты): `APP_ENV=dev`, `DEFAULT_URI=http://localhost`, креды БД для докера. (`APP_SECRET` пуст — для dev нормально.)
-
----
-
-## 9. Инфраструктура / Docker
-
-- __`Dockerfile`__: `php:8.4-fpm`, ставит `git`, `unzip`, `libpq-dev`, `pdo_pgsql`, копирует composer из `composer:2`, `WORKDIR /var/www/html`, `CMD php-fpm`.
-
-- __`compose.yaml`__:
-
-  - `php` — сборка из Dockerfile, volume `./:/var/www/html`, сеть `symfony`.
-  - `nginx` — `nginx:alpine`, порт __8080 к 80__, конфиг из `docker/nginx/default.conf`, зависит от php.
-  - `database` — `postgres:16-alpine`, env из `.env`, порт 5432, volume `database_data`, healthcheck.
-
-- __`compose.override.yaml`__ — убирает публикацию порта БД.
-
-- __`docker/nginx/default.conf`__: root `/var/www/html/public`, `try_files ... /index.php`, `fastcgi_pass php:9000`, прямые `.php` (кроме index) возвращают 404.
-
-Точка входа: `public/index.php` через `autoload_runtime.php` и `App\Kernel`.
-
----
-
-## 10. Тесты
-
-Symfony TestPack __не установлен__ явно, но `tests/` есть (тесты наследуют `WebTestCase`, значит framework-bundle + test-конфиг доступны). Тесты — тривиальные HTTP-проверки заглушек:
-
-- `OrderControllerTest::testIndex()` — GET `/order`, `assertResponseIsSuccessful()`.
-- `UserControllerTest::testIndex()` — GET `/user`, `assertResponseIsSuccessful()`.
-
-Тестов на entity/сервисы/БД нет. Запуск: `php bin/phpunit` (или `vendor/bin/phpunit`).
-
----
-
-## 11. Правила разработки проекта (`AGENTS.md`)
-
-Ключевое (агент обязан соблюдать):
-
-- __Symfony Best Practices__; PHP-атрибуты для метаданных (`#[Route]`, `#[MapRequestPayload]`, `#[IsGranted]`, `#[Assert...]`, `#[AsCommand]`, `#[AsMessageHandler]` и т.д.). Никакого YAML/XML-роутинга.
-- __Autowiring/autoconfiguration__; YAML-определения сервисов — последнее средство.
-- Контроллеры тонкие, делегируют в сервисы, наследуют `AbstractController`.
-- __Flex вместо ручной настройки__: новые возможности — через `composer require` (рецепт сам зарегистрирует бандл/конфиг). Не редактировать `config/bundles.php` вручную.
-- __MapRequestPayload/MapQueryString__ для привязки данных запроса (вместо `json_decode`), при необходимости — `composer require` Serializer/Validator.
-- __Constructor property promotion__, `readonly` для DTO/VO (но не помечать `readonly` сервис, который может стать `lazy`).
-- __`symfony/lock`__ (`LockFactory`) для взаимного исключения — не самодельные флаги/лок-файлы.
-- Doctrine: изменения схемы — __только через миграции__ (`make:migration` — `doctrine:migrations:migrate`), никогда `doctrine:schema:update` и не ручной SQL.
-- Запуск: `symfony serve -d`, `symfony console ...` (или `bin/console`). Логи — `var/log/dev.log`, профайлер `/_profiler`.
-- Секреты — в `.env.local` (git-ignored) или vault; `.env` содержит только дефолты.
-- Тесты обязательны: feature не готов, пока нет теста, дергающего её как вызывающий код (HTTP-запрос для контроллера, вызов сервиса для сервиса).
-- Стиль: `@Symfony` php-cs-fixer (если установлен `friendsofphp/php-cs-fixer`).
-- __«Discover, don't guess»__: сверяться с установленной версией через `bin/console about`, `debug:router`, `debug:container`, `debug:autowiring`, `debug:config`, `lint:container`, исходники в `vendor/`.
-
----
-
-## 12. Текущее состояние против предполагаемой бизнес-логики
-
-__Что уже есть (каркас):__
-
-- Модель данных `User`/`Order`/`Payment` со связями и каскадной синхронизацией коллекций.
-- Схема БД через миграции.
-- Инфраструктура запуска (docker: php-fpm + nginx + postgres).
-- Тривиальные маршруты и тесты-заглушки.
-
-__Чего ещё нет (кандидаты на реализацию):__
-
-1. __Доменные сервисы__: учёт взносов в заказ, расчёт «кто сколько должен / кто кому должен», пересчёт `Order.paid_price` (или отказ от него в пользу вычисления из `payments`).
-2. __REST API__: CRUD для `User`/`Order`, создание `Payment`, эндпоинты отчётов по заказу. (Потребуется `composer require symfony/serializer` + `symfony/validator`, DI-атрибуты `#[MapRequestPayload]`.)
-3. __DTO + валидация__ (`#[Assert...]`, `readonly` DTO).
-4. __Персистентность через сервисы__: сейчас контроллеры вообще не работают с EntityManager.
-5. __Аутентификация/авторизация__ (SecurityBundle + аутентификатор + voters) — если нужно ограничивать доступ к заказам их участникам.
-6. __Конкурентность__: параллельные взносы в один заказ — использовать `symfony/lock`.
-7. __Тесты__: функциональные (WebTestCase с БД), юнит-тесты сервисов/расчётов, fixtures.
-8. __Исправление несоответствия__ имён таблиц `User`/`Order`: entity (`users`, `orders`) против миграций (`user`, `order`) — проверить `doctrine:schema:validate` и согласовать.
-
----
-
-## 13. Быстрые команды (для агента)
+## 10. Краткая памятка команд
 
 ```bash
-# поднять окружение
-docker compose up -d            # php-fpm, nginx(:8080), postgres
+# Запуск контейнеров
+docker compose up -d
 
-# инфо о проекте
-bin/console about
-bin/console debug:router
-bin/console debug:container --show-arguments
-bin/console lint:container
+# Миграции БД
+docker compose exec php php bin/console doctrine:migrations:migrate --no-interaction
 
-# проверка соответствия схемы entity
-bin/console doctrine:schema:validate
+# Прогрев / очистка кеша
+docker compose exec php php bin/console cache:clear
+docker compose exec php php bin/console cache:warmup
 
-# миграции
-bin/console make:migration
-bin/console doctrine:migrations:migrate
+# Запуск полного набора автотестов
+docker compose exec php php bin/phpunit
 
-# тесты
-php bin/phpunit
+# Запуск бенчмарка по всем стратегиям
+docker compose exec php php bin/console app:benchmark:run --strategy all --requests 50 --concurrency 10
 ```
-
-### Краткие заметки/риски
-
-- __Имена таблиц__: entity `User` — `users`, `Order` — `orders` (экранировано), а миграции создают `user` и `order`. Вероятное расхождение — проверить/исправить.
-- `Order` — зарезервированное слово SQL, поэтому экранирование имени таблицы обязательно.
-- `paid_price` — денормализация; нужно определить источник истины (поле или агрегат по `payments`).
-- Тестовое окружение использует отдельную БД `_test` — для функциональных тестов потребуется настроить миграции/фикстуры для теста.

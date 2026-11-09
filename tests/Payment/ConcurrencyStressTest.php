@@ -145,12 +145,12 @@ final class ConcurrencyStressTest extends KernelTestCase
         self::assertSame(0, $result->status5xxCount);
     }
 
-    public function testSymfonyLockStrictlyEnforcesInvariantsUnderConcurrency(): void
+    public function testMutexStrictlyEnforcesInvariantsUnderConcurrency(): void
     {
         [$orderId, $userId] = $this->createScenario(3000);
 
         $result = $this->runner->run(
-            strategy: 'symfony_lock',
+            strategy: 'mutex',
             orderId: $orderId,
             userId: $userId,
             totalRequests: 12,

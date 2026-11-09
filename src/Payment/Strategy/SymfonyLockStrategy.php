@@ -15,6 +15,7 @@ use App\Exception\OverpaymentException;
 use App\Payment\PaymentResult;
 use App\Payment\PaymentStrategyInterface;
 use App\Repository\PaymentRepository;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Lock\LockFactory;
 
@@ -70,6 +71,13 @@ final class SymfonyLockStrategy implements PaymentStrategyInterface
         try {
             $this->em->beginTransaction();
             try {
+                // Crucial for mutex correctness: refresh the Order entity immediately after
+                // acquiring the lock and starting the transaction. Any preceding PHP worker
+                // that held this mutex will have committed its changes to PostgreSQL; refresh()
+                // brings those committed values into this worker's Doctrine Identity Map,
+                // eliminating stale reads, lost updates, and OptimisticLockException.
+                $this->em->refresh($order);
+
                 // I5: idempotency — safe; we hold the application-level mutex
                 if ($this->paymentRepository->findOneBy(['idempotencyKey' => $idempotencyKey]) !== null) {
                     throw new IdempotencyConflictException($idempotencyKey);
@@ -96,6 +104,9 @@ final class SymfonyLockStrategy implements PaymentStrategyInterface
                 $this->em->commit();
 
                 return new PaymentResult($payment, $this->getName());
+            } catch (UniqueConstraintViolationException) {
+                $this->rollbackSafely();
+                throw new IdempotencyConflictException($idempotencyKey);
             } catch (\Throwable $e) {
                 $this->rollbackSafely();
                 throw $e;

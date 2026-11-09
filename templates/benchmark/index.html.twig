@@ -1,0 +1,332 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Бенчмарк стратегій конкурентності — SplitPay{% endblock %}
+
+{% block body %}
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <h2 class="h3 fw-bold mb-1"><i class="bi bi-cpu text-primary me-2"></i>Дослідження стратегій конкурентності</h2>
+        <p class="text-muted mb-0">Порівняння 5 механізмів синхронізації при паралельній оплаті сплітів під високим навантаженням (High Contention)</p>
+    </div>
+</div>
+
+{# Якщо є результати живого запуску #}
+{% if benchmarkResult is not null %}
+    <div class="card border-primary shadow-sm mb-5">
+        <div class="card-header bg-primary text-white py-3 d-flex justify-content-between align-items-center">
+            <span class="h5 mb-0 fw-bold">
+                <i class="bi bi-graph-up-arrow me-2"></i>Результати живого тесту: <code>{{ benchmarkResult.strategy }}</code>
+            </span>
+            {% if testOrder %}
+                <a href="{{ path('web_order_show', {id: testOrder.id}) }}" class="btn btn-light btn-sm fw-semibold" target="_blank">
+                    Відкрити тестове замовлення #{{ testOrder.id }} <i class="bi bi-box-arrow-up-right ms-1"></i>
+                </a>
+            {% endif %}
+        </div>
+        <div class="card-body">
+            {# Головні метрики #}
+            <div class="row g-3 text-center mb-4">
+                <div class="col-6 col-md-3">
+                    <div class="p-3 bg-light rounded border">
+                        <div class="text-muted small">Пропускна здатність</div>
+                        <div class="h2 fw-bold text-primary mb-0 mono">{{ benchmarkResult.requestsPerSecond|number_format(1) }} <span class="fs-6 fw-normal text-muted">RPS</span></div>
+                        <div class="small text-muted mono mt-1">{{ benchmarkResult.totalRequests }} req за {{ benchmarkResult.totalTimeSeconds|number_format(2) }}s</div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="p-3 bg-light rounded border">
+                        <div class="text-muted small">P50 Latency (Медіана)</div>
+                        <div class="h2 fw-bold mb-0 mono">{{ benchmarkResult.latencyP50Ms|number_format(1) }} <span class="fs-6 fw-normal text-muted">мс</span></div>
+                        <div class="small text-muted mono mt-1">Min: {{ benchmarkResult.latencyMinMs|number_format(1) }} мс</div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="p-3 bg-light rounded border">
+                        <div class="text-muted small">P95 Latency</div>
+                        <div class="h2 fw-bold mb-0 mono text-dark">{{ benchmarkResult.latencyP95Ms|number_format(1) }} <span class="fs-6 fw-normal text-muted">мс</span></div>
+                        <div class="small text-muted mono mt-1">95% запитів швидші за це</div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="p-3 bg-light rounded border">
+                        <div class="text-muted small">P99 Latency (Хвіст)</div>
+                        <div class="h2 fw-bold mb-0 mono text-danger">{{ benchmarkResult.latencyP99Ms|number_format(1) }} <span class="fs-6 fw-normal text-muted">мс</span></div>
+                        <div class="small text-muted mono mt-1">Max: {{ benchmarkResult.latencyMaxMs|number_format(1) }} мс</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row g-4">
+                {# HTTP відповіді #}
+                <div class="col-md-6">
+                    <div class="card h-100">
+                        <div class="card-header py-2 small fw-bold text-muted">
+                            <i class="bi bi-pie-chart me-1"></i> Розподіл HTTP відповідей ({{ benchmarkResult.totalRequests }} запитів при паралельності {{ benchmarkResult.concurrency }})
+                        </div>
+                        <div class="card-body">
+                            <ul class="list-group list-group-flush small">
+                                <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                                    <span><span class="badge bg-success me-2">201 Created</span> Успішні спліт-платежі</span>
+                                    <span class="mono fw-bold fs-6 text-success">{{ benchmarkResult.status201Count }}</span>
+                                </li>
+                                <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                                    <span><span class="badge bg-warning text-dark me-2">409 Conflict</span> Конфлікти блокувань / ідемпотентності</span>
+                                    <span class="mono fw-bold fs-6 text-warning-emphasis">{{ benchmarkResult.status409Count }}</span>
+                                </li>
+                                <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                                    <span><span class="badge bg-info text-dark me-2">422 Unprocessable</span> Відхилено через перевищення залишку (Overpayment)</span>
+                                    <span class="mono fw-bold fs-6 text-info-emphasis">{{ benchmarkResult.status422Count }}</span>
+                                </li>
+                                <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                                    <span><span class="badge bg-danger me-2">5xx Errors</span> Помилки сервера</span>
+                                    <span class="mono fw-bold fs-6 {% if benchmarkResult.status5xxCount > 0 %}text-danger{% else %}text-muted{% endif %}">{{ benchmarkResult.status5xxCount }}</span>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                {# Аудит інваріантів #}
+                <div class="col-md-6">
+                    <div class="card h-100">
+                        <div class="card-header py-2 small fw-bold text-muted">
+                            <i class="bi bi-shield-check me-1"></i> Аудит консистентності та інваріантів (ConsistencyAuditor)
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3 d-flex justify-content-between align-items-center p-2 rounded {% if not benchmarkResult.audit.isOverpaid %}bg-success-subtle border border-success-subtle{% else %}bg-danger-subtle border border-danger-subtle{% endif %}">
+                                <div>
+                                    <strong>Інваріант I1 (No Overpayment):</strong>
+                                    <div class="small text-muted">Сума оплат не повинна перевищувати повну вартість замовлення</div>
+                                </div>
+                                <div>
+                                    {% if not benchmarkResult.audit.isOverpaid %}
+                                        <span class="badge bg-success px-2 py-1"><i class="bi bi-check-lg me-1"></i> ЗБЕРЕЖЕНО</span>
+                                    {% else %}
+                                        <span class="badge bg-danger px-2 py-1"><i class="bi bi-x-lg me-1"></i> ПОРУШЕНО</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+
+                            <div class="mb-3 d-flex justify-content-between align-items-center p-2 rounded {% if benchmarkResult.audit.isConsistent %}bg-success-subtle border border-success-subtle{% else %}bg-danger-subtle border border-danger-subtle{% endif %}">
+                                <div>
+                                    <strong>Інваріант I2 (Paid Amount Consistency):</strong>
+                                    <div class="small text-muted">Order.paid_price_cents == SUM(Payment.amount_cents)</div>
+                                </div>
+                                <div>
+                                    {% if benchmarkResult.audit.isConsistent %}
+                                        <span class="badge bg-success px-2 py-1"><i class="bi bi-check-lg me-1"></i> ЗБЕРЕЖЕНО</span>
+                                    {% else %}
+                                        <span class="badge bg-danger px-2 py-1"><i class="bi bi-x-lg me-1"></i> ПОРУШЕНО</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+
+                            <div class="border-top pt-2 small mono">
+                                <div class="d-flex justify-content-between text-muted">
+                                    <span>Повна сума замовлення:</span>
+                                    <span>${{ (benchmarkResult.audit.orderFullPriceCents / 100)|number_format(2) }}</span>
+                                </div>
+                                <div class="d-flex justify-content-between text-muted">
+                                    <span>Кешований баланс (Order):</span>
+                                    <span>${{ (benchmarkResult.audit.orderPaidPriceCents / 100)|number_format(2) }}</span>
+                                </div>
+                                <div class="d-flex justify-content-between fw-bold {% if benchmarkResult.audit.isConsistent %}text-success{% else %}text-danger{% endif %}">
+                                    <span>Фактична сума рядків (DB):</span>
+                                    <span>${{ (benchmarkResult.audit.actualPaymentSumCents / 100)|number_format(2) }} ({{ benchmarkResult.audit.paymentCount }} платежів)</span>
+                                </div>
+                                {% if benchmarkResult.audit.discrepancyCents != 0 %}
+                                    <div class="d-flex justify-content-between text-danger fw-bold mt-1">
+                                        <span>Розбіжність (Discrepancy):</span>
+                                        <span>${{ (benchmarkResult.audit.discrepancyCents / 100)|number_format(2) }}</span>
+                                    </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endif %}
+
+{# Форма запуску бенчмарку #}
+<div class="card shadow-sm mb-5">
+    <div class="card-header py-3 bg-light">
+        <span class="h5 mb-0 fw-bold"><i class="bi bi-play-circle-fill text-primary me-2"></i>Запустити стрес-тест із Web UI</span>
+    </div>
+    <div class="card-body">
+        <p class="text-muted small mb-4">
+            Тест створює окреме замовлення та надсилає пачку паралельних HTTP-запитів через Nginx до PHP-FPM, намагаючись викликати стан гонки (Race Condition) під час списання балансу.
+        </p>
+
+        <form action="{{ path('web_benchmark_run') }}" method="POST">
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label for="benchStrategy" class="form-label fw-semibold">Стратегія синхронізації</label>
+                    <select class="form-select font-monospace" id="benchStrategy" name="strategy" required>
+                        <option value="atomic" {% if lastParams is defined and lastParams.strategy == 'atomic' %}selected{% endif %}>atomic — Atomic Conditional UPDATE (Рекомендується)</option>
+                        <option value="pessimistic" {% if lastParams is defined and lastParams.strategy == 'pessimistic' %}selected{% endif %}>pessimistic — SELECT ... FOR UPDATE</option>
+                        <option value="optimistic" {% if lastParams is defined and lastParams.strategy == 'optimistic' %}selected{% endif %}>optimistic — #[ORM\Version] + Retry</option>
+                        <option value="mutex" {% if lastParams is defined and lastParams.strategy == 'mutex' %}selected{% endif %}>mutex — Symfony Lock Mutex</option>
+                        <option value="baseline" {% if lastParams is defined and lastParams.strategy == 'baseline' %}selected{% endif %}>baseline — Контрольна група (БЕЗ блокувань)</option>
+                    </select>
+                </div>
+
+                <div class="col-md-2">
+                    <label for="totalRequests" class="form-label fw-semibold">Всього запитів</label>
+                    <input type="number" class="form-control mono" id="totalRequests" name="total_requests" value="{{ lastParams.totalRequests ?? 100 }}" min="10" max="300" required>
+                    <div class="form-text small">10–300 req</div>
+                </div>
+
+                <div class="col-md-2">
+                    <label for="concurrency" class="form-label fw-semibold">Паралельність (Workers)</label>
+                    <input type="number" class="form-control mono" id="concurrency" name="concurrency" value="{{ lastParams.concurrency ?? 10 }}" min="1" max="30" required>
+                    <div class="form-text small">1–30 потоків</div>
+                </div>
+
+                <div class="col-md-2">
+                    <label for="paymentAmount" class="form-label fw-semibold">Сума платежу ($)</label>
+                    <input type="number" step="1" class="form-control mono" id="paymentAmount" name="payment_amount_dollars" value="{{ lastParams.paymentAmountDollars ?? 10.00 }}" min="1" required>
+                    <div class="form-text small">Розмір спліту</div>
+                </div>
+
+                <div class="col-md-2">
+                    <label for="orderPrice" class="form-label fw-semibold">Сума замовлення ($)</label>
+                    <input type="number" step="1" class="form-control mono" id="orderPrice" name="order_price_dollars" value="{{ lastParams.orderPriceDollars ?? 100.00 }}" min="10" required>
+                    <div class="form-text small">Ліміт балансу</div>
+                </div>
+
+                <div class="col-12 mt-4">
+                    <button type="submit" class="btn btn-primary px-4 py-2 fw-semibold" id="runBtn" onclick="this.innerHTML='<span class=\'spinner-border spinner-border-sm me-2\'></span>Виконується стрес-тест...';">
+                        <i class="bi bi-lightning-charge me-1"></i> Запустити бенчмарк
+                    </button>
+                    <span class="text-muted small ms-3">
+                        <i class="bi bi-info-circle me-1"></i> Під час запуску <code>baseline</code> ви наочно побачите оверпеймент та порушення цілісності балансу.
+                    </span>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+{# Зведена таблиця з BENCHMARK_RESULTS.md #}
+<div class="card shadow-sm mb-5">
+    <div class="card-header py-3 d-flex justify-content-between align-items-center">
+        <span class="h5 mb-0 fw-bold"><i class="bi bi-table me-2 text-primary"></i>Емпіричні результати бенчмарку (200 запитів, 25 воркерів)</span>
+        <span class="badge bg-secondary-subtle text-dark border">PostgreSQL 16 &bull; PHP 8.4</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th class="ps-3">Стратегія</th>
+                        <th>Механізм синхронізації</th>
+                        <th class="text-center">I1: No Overpay</th>
+                        <th class="text-center">I2: Integrity</th>
+                        <th class="text-end">RPS</th>
+                        <th class="text-end">P50</th>
+                        <th class="text-end">P95</th>
+                        <th class="text-end">P99</th>
+                        <th class="pe-3">Рекомендація</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr class="table-danger-subtle">
+                        <td class="ps-3 fw-bold mono">1. baseline</td>
+                        <td>Без блокувань (Контрольна група)</td>
+                        <td class="text-center text-danger fw-bold"><i class="bi bi-x-circle-fill"></i> Порушено</td>
+                        <td class="text-center text-danger fw-bold"><i class="bi bi-x-circle-fill"></i> Порушено</td>
+                        <td class="text-end mono">112.16</td>
+                        <td class="text-end mono">112.8 ms</td>
+                        <td class="text-end mono">233.9 ms</td>
+                        <td class="text-end mono">267.6 ms</td>
+                        <td class="pe-3 text-danger fw-semibold">Ніколи в продакшені</td>
+                    </tr>
+                    <tr>
+                        <td class="ps-3 fw-bold mono">2. pessimistic</td>
+                        <td>Row write lock (<code>SELECT … FOR UPDATE</code>)</td>
+                        <td class="text-center text-success fw-bold"><i class="bi bi-check-circle-fill"></i> Збережено</td>
+                        <td class="text-center text-success fw-bold"><i class="bi bi-check-circle-fill"></i> Збережено</td>
+                        <td class="text-end mono">131.22</td>
+                        <td class="text-end mono">104.7 ms</td>
+                        <td class="text-end mono">178.4 ms</td>
+                        <td class="text-end mono">235.4 ms</td>
+                        <td class="pe-3 text-muted">Сувора консистентність</td>
+                    </tr>
+                    <tr>
+                        <td class="ps-3 fw-bold mono">3. optimistic</td>
+                        <td><code>#[ORM\Version]</code> + скидання EM і повтор</td>
+                        <td class="text-center text-success fw-bold"><i class="bi bi-check-circle-fill"></i> Збережено</td>
+                        <td class="text-center text-success fw-bold"><i class="bi bi-check-circle-fill"></i> Збережено</td>
+                        <td class="text-end mono">145.17</td>
+                        <td class="text-end mono">93.2 ms</td>
+                        <td class="text-end mono">160.5 ms</td>
+                        <td class="text-end mono">225.8 ms</td>
+                        <td class="pe-3 text-muted">Низька конкурентність</td>
+                    </tr>
+                    <tr>
+                        <td class="ps-3 fw-bold mono">4. symfony_lock (mutex)</td>
+                        <td>М'ютекс рівня застосунку (<code>LockFactory</code>)</td>
+                        <td class="text-center text-success fw-bold"><i class="bi bi-check-circle-fill"></i> Збережено</td>
+                        <td class="text-center text-success fw-bold"><i class="bi bi-check-circle-fill"></i> Збережено</td>
+                        <td class="text-end mono">124.00</td>
+                        <td class="text-end mono">109.9 ms</td>
+                        <td class="text-end mono">203.7 ms</td>
+                        <td class="text-end mono">226.5 ms</td>
+                        <td class="pe-3 text-muted">Зовнішні API / Stripe</td>
+                    </tr>
+                    <tr class="table-success-subtle">
+                        <td class="ps-3 fw-bold mono text-success">5. atomic</td>
+                        <td><strong>Атомарний conditional SQL UPDATE</strong></td>
+                        <td class="text-center text-success fw-bold"><i class="bi bi-check-circle-fill"></i> Збережено</td>
+                        <td class="text-center text-success fw-bold"><i class="bi bi-check-circle-fill"></i> Збережено</td>
+                        <td class="text-end mono fw-bold text-success">150.60</td>
+                        <td class="text-end mono fw-bold text-success">79.5 ms</td>
+                        <td class="text-end mono fw-bold text-success">131.4 ms</td>
+                        <td class="text-end mono fw-bold text-success">160.1 ms</td>
+                        <td class="pe-3 text-success fw-bold"><i class="bi bi-star-fill text-warning me-1"></i> Best Overall (Top Perf)</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+{# Опис інваріантів I1–I5 #}
+<div class="row g-4">
+    <div class="col-12">
+        <h4 class="h5 fw-bold mb-3"><i class="bi bi-shield-lock text-secondary me-2"></i>Інваріанти цілісності платіжної системи</h4>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100 p-3">
+            <div class="fw-bold mb-1"><span class="badge bg-primary me-2">I1</span> No Overpayment</div>
+            <p class="small text-muted mb-0">Сумарний обсяг зафіксованих платежів ніколи не перевищує <code>Order.full_price_cents</code>.</p>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100 p-3">
+            <div class="fw-bold mb-1"><span class="badge bg-primary me-2">I2</span> Balance Integrity</div>
+            <p class="small text-muted mb-0">Денормалізоване поле <code>Order.paid_price_cents</code> завжди суворо дорівнює <code>SUM(Payment.amount_cents)</code>.</p>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100 p-3">
+            <div class="fw-bold mb-1"><span class="badge bg-primary me-2">I3</span> No Remainder Overflow</div>
+            <p class="small text-muted mb-0">Платіж негайно відхиляється, якщо його розмір перевищує доступний залишок до оплати.</p>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100 p-3">
+            <div class="fw-bold mb-1"><span class="badge bg-primary me-2">I4</span> No Lost Updates</div>
+            <p class="small text-muted mb-0">Паралельні успішні платежі не повинні перезаписувати баланси один одного (запобігання класичній аномалії lost update).</p>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100 p-3">
+            <div class="fw-bold mb-1"><span class="badge bg-primary me-2">I5</span> Request Idempotency</div>
+            <p class="small text-muted mb-0">Повторний запит із тим самим <code>idempotency_key</code> гарантовано відхиляється з кодом <code>409 Conflict</code> без повторного списання.</p>
+        </div>
+    </div>
+</div>
+{% endblock %}
