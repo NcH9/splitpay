@@ -35,8 +35,7 @@ use Symfony\Component\Lock\LockFactory;
  *   - SymfonyLock blocks at the application level (before the transaction opens)
  *   - Both serialize access; difference matters for distributed environments
  *
- * Store: configured via LOCK_DSN in .env (default: flock on filesystem).
- * For distributed setups: redis://, postgresql://, or memcached://.
+ * Store: configured via LOCK_DSN in .env (distributed Redis backend: redis://redis:6379).
  */
 final class SymfonyLockStrategy implements PaymentStrategyInterface
 {
