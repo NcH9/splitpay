@@ -159,4 +159,72 @@ final class PaymentPostProcessingTest extends TestCase
         self::assertCount(1, $dispatchedMessages);
         self::assertInstanceOf(PaymentReceivedEvent::class, $dispatchedMessages[0]);
     }
+
+    public function testPayDispatchesOrderFullyPaidUsingPaymentOrderAfterOptimisticRetry(): void
+    {
+        $user = new User('Test Payer');
+        $staleOrder = new Order('Monitor', 10000, $user);
+
+        // Simulate EntityManager::resetManager() inside OptimisticLockStrategy returning a new Order instance
+        $reloadedOrder = new Order('Monitor', 10000, $user);
+        $reloadedOrder->setPaidPriceCents(10000);
+        $reloadedOrder->setStatus(OrderStatus::Paid);
+
+        $orderRepository = self::createStub(OrderRepository::class);
+        $orderRepository->method('find')->willReturn($staleOrder);
+
+        $userRepository = self::createStub(UserRepository::class);
+        $userRepository->method('find')->willReturn($user);
+
+        $payment = new \App\Entity\Payment(
+            amountCents:    5000,
+            paymentMethod:  \App\Enum\PaymentMethod::Card,
+            idempotencyKey: 'idem-opt-retry-1',
+            user:           $user,
+            order:          $reloadedOrder,
+        );
+
+        $strategy = self::createStub(\App\Payment\PaymentStrategyInterface::class);
+        $strategy->method('getName')->willReturn('optimistic');
+        $strategy->method('processPayment')->willReturn(new PaymentResult($payment, 'optimistic', retriesAttempted: 1));
+        $strategyRegistry = new StrategyRegistry([$strategy]);
+
+        $idempotencyFilter = self::createStub(IdempotencyFilterInterface::class);
+
+        /** @var array<object> $dispatchedMessages */
+        $dispatchedMessages = [];
+        $messageBus = $this->createMock(MessageBusInterface::class);
+        $messageBus->expects(self::exactly(2))
+            ->method('dispatch')
+            ->willReturnCallback(function (object $message) use (&$dispatchedMessages) {
+                $dispatchedMessages[] = $message;
+
+                return new Envelope($message);
+            });
+
+        $service = new PaymentService(
+            $orderRepository,
+            $userRepository,
+            $strategyRegistry,
+            $idempotencyFilter,
+            $messageBus,
+        );
+
+        $request = new ProcessPaymentRequest(
+            amountCents:    5000,
+            paymentMethod:  'card',
+            idempotencyKey: 'idem-opt-retry-1',
+            userId:         1,
+            strategy:       'optimistic',
+        );
+
+        $result = $service->pay(3, $request);
+
+        self::assertSame(1, $result->retriesAttempted);
+        self::assertFalse($staleOrder->isFullyPaid(), 'Initial pre-retry order instance stays stale in memory.');
+        self::assertCount(2, $dispatchedMessages);
+        self::assertInstanceOf(PaymentReceivedEvent::class, $dispatchedMessages[0]);
+        self::assertInstanceOf(OrderFullyPaidEvent::class, $dispatchedMessages[1]);
+        self::assertSame(10000, $dispatchedMessages[1]->totalPaidCents);
+    }
 }

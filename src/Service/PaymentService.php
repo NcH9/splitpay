@@ -77,6 +77,10 @@ final class PaymentService
             );
 
             $payment = $result->payment;
+            // Strategies such as OptimisticLockStrategy may reset the EntityManager on retry and
+            // attach the committed Payment to a freshly reloaded Order/User instance.
+            $resolvedOrder = $payment->getOrder() ?? $order;
+            $resolvedUser = $payment->getUser() ?? $user;
 
             // 2. Mark idempotency key as committed in Redis with retention TTL (24h)
             $this->idempotencyFilter->commit($request->idempotencyKey, $payment->getId());
@@ -84,19 +88,19 @@ final class PaymentService
             // 3. Dispatch asynchronous domain events to RabbitMQ
             $this->messageBus->dispatch(new PaymentReceivedEvent(
                 paymentId:      $payment->getId() ?? 0,
-                orderId:        $order->getId() ?? 0,
-                userId:         $user->getId() ?? 0,
+                orderId:        $resolvedOrder->getId() ?? 0,
+                userId:         $resolvedUser->getId() ?? 0,
                 amountCents:    $payment->getAmountCents(),
                 paymentMethod:  $payment->getPaymentMethod()->value,
                 idempotencyKey: $payment->getIdempotencyKey(),
                 occurredAt:     $payment->getCreatedAt()->format(\DateTimeInterface::ATOM),
             ));
 
-            if ($order->isFullyPaid()) {
+            if ($resolvedOrder->isFullyPaid()) {
                 $this->messageBus->dispatch(new OrderFullyPaidEvent(
-                    orderId:        $order->getId() ?? 0,
-                    userId:         $user->getId() ?? 0,
-                    totalPaidCents: $order->getPaidPriceCents(),
+                    orderId:        $resolvedOrder->getId() ?? 0,
+                    userId:         $resolvedUser->getId() ?? 0,
+                    totalPaidCents: $resolvedOrder->getPaidPriceCents(),
                     occurredAt:     (new \DateTimeImmutable())->format(\DateTimeInterface::ATOM),
                 ));
             }

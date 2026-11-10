@@ -97,9 +97,16 @@ The benchmark evaluates five distinct synchronization architectures against the 
 
 ---
 
-## 5. Automated Test Verification
+## 5. Automated Test Verification & Architectural Updates
+
+> **Note on later architectural upgrades:** The benchmark table in Section 3 reflects the initial empirical baseline run (`25 / 200`, previously labeled `symfony_lock`). Since that run, the project has been extended with:
+> 1. Unified strategy naming (`symfony_lock` → `mutex`) and `$em->refresh($order)` inside `SymfonyLockStrategy` to prevent stale reads;
+> 2. Distributed Redis backend for `symfony/lock` (`LOCK_DSN=redis://redis:6379`) and `RedisIdempotencyFilter` (`SET NX EX`);
+> 3. Asynchronous domain events (`PaymentReceivedEvent`, `OrderFullyPaidEvent`) over RabbitMQ / Symfony Messenger;
+> 4. Server-rendered Twig + Bootstrap 5 Web UI (including live benchmarking at `/benchmark`).
 
 All invariants and behaviors are permanently codified and verified in PHPUnit:
-* **`StrategyIntegrationTest`** (21 tests): Verifies single-request correctness, edge cases, and status transitions for all 5 strategies.
-* **`ConcurrencyStressTest`** (5 tests): Real parallel HTTP stress tests confirming that `baseline` fails under concurrency while `pessimistic`, `optimistic`, `symfony_lock`, and `atomic` strictly enforce invariants **I1** through **I5**.
-* **Full Test Suite**: **46 tests, 117 assertions — 100% GREEN**.
+* **`StrategyIntegrationTest`** (22 tests): Verifies single-request correctness, edge cases, stale-state refresh for `mutex`, and status transitions for all 5 strategies.
+* **`ConcurrencyStressTest`** (5 tests): Real parallel HTTP stress tests confirming that `baseline` fails under concurrency while `pessimistic`, `optimistic`, `mutex`, and `atomic` strictly enforce invariants **I1** through **I5**.
+* **Additional Suites**: Controller API & Web UI tests (`WebInterfaceTest`), `RedisIdempotencyFilterTest`, `PaymentPostProcessingTest`, `MessengerFailureAndRetryTest`, MessageHandler tests, `ConsistencyAuditorTest`, and `BenchmarkRunCommandTest`.
+* **Full Test Suite**: **62 tests, 207 assertions — ALL PASSING**.

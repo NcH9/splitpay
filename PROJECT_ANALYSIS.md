@@ -1,247 +1,345 @@
 # SplitPay — Анализ проекта (Актуальное состояние кодовой базы)
 
-> **Назначение документа:** предоставить разработчику или AI-агенту полную, точную и актуальную картину текущего состояния проекта **SplitPay** — архитектуру, стек, доменную модель, стратегии конкурентности, API, бенчмарки и инфраструктуру.
+> **Назначение документа:** дать разработчику или AI-агенту полную, точную и актуальную картину проекта **SplitPay** — технологический стек, архитектуру слоёв, доменную модель, 5 стратегий конкурентности, механизмы Redis-идемпотентности и асинхронных событий RabbitMQ, веб-интерфейс (Twig), HTTP API, бенчмарк и тестовое покрытие.
 
 ---
 
 ## 1. Общее резюме
 
-**SplitPay** — это высоконадежное приложение на **Symfony 8.1** и **PHP 8.4** с подключенным **Doctrine ORM 3.7** и **PostgreSQL 16**, разработанное для изучения и сравнительного анализа механизмов синхронизации при конкурентных финансовых операциях над общим заказом.
+**SplitPay** — это прикладная исследовательская система на **Symfony 8.1.6** и **PHP 8.4**, использующая **PostgreSQL 16**, **Redis 7** и **RabbitMQ 3** в Docker Compose. Проект моделирует совместную оплату заказов (split payments) и служит платформой для эмпирического сравнения механизмов обеспечения консистентности данных при высокой конкурентности.
 
-Архитектура проекта полностью реализована и протестирована:
-- **Доменная модель:** Сущности `User`, `Order`, `Payment` со строгими инвариантами, целочисленным учетом денежных величин в минорных единицах (`amountCents`, `fullPriceCents`, `paidPriceCents`) и перечислениями (`OrderStatus`, `PaymentMethod`).
-- **5 стратегий конкурентности:** Реализованы по паттерну Strategy (`baseline`, `pessimistic`, `optimistic`, `mutex`, `atomic`).
-- **REST API:** Полноценный презентационный слой на тонких контроллерах с валидацией через `#[MapRequestPayload]` и DTO.
-- **Инструментарий бенчмаркинга:** Консольная команда `app:benchmark:run`, многопоточный runner на `curl_multi` и независимый SQL-аудитор целостности `ConsistencyAuditor`.
-- **Автоматические тесты:** 47 тестов (100% passing), включая интеграционные тесты стратегий в реальной PostgreSQL и стресс-тесты параллельных HTTP-запросов через Nginx к PHP-FPM.
+На текущий момент проект полностью реализован и включает:
+- **Доменная модель:** Сущности `User`, `Order`, `Payment` с целочисленным учётом денежных величин в центах (`amountCents`, `fullPriceCents`, `paidPriceCents`), перечислениями (`OrderStatus`, `PaymentMethod`) и оптимистической версионностью (`#[ORM\Version]`).
+- **5 стратегий конкурентности:** Реализованы через общий интерфейс `PaymentStrategyInterface` (`baseline`, `pessimistic`, `optimistic`, `mutex`, `atomic`) и автоматически регистрируются через `StrategyRegistry`.
+- **Distributed Redis Layer:**
+  - Распределённый pre-filter идемпотентности `RedisIdempotencyFilter` (Stripe pattern на базе `SET NX EX` в Redis до обращения к PostgreSQL).
+  - Распределённый бэкенд `LOCK_DSN=redis://redis:6379` для `symfony/lock` (стратегия `mutex`).
+- **Async Messaging (RabbitMQ + Symfony Messenger):** Асинхронная публикация доменных событий `PaymentReceivedEvent` и `OrderFullyPaidEvent` через AMQP exchange `splitpay_events`, политика повторных попыток (exponential backoff) и Dead Letter Queue (`splitpay_dlq`).
+- **Два интерфейса взаимодействия:**
+  - **REST API** (тонкие контроллеры, DTO с `#[MapRequestPayload]`, Symfony Validator/Serializer).
+  - **Серверный веб-интерфейс (Twig + Bootstrap 5.3)** на русском/украинском языке (интерфейс на украинском согласно политике `AGENTS.md`): дашборд заказов, карточка заказа с оплатой и историей транзакций, интерактивный запуск бенчмарков.
+- **Инструментарий бенчмаркинга:** CLI-команда `app:benchmark:run`, параллельный HTTP-раннер на `curl_multi` (`BenchmarkRunner`) и независимый SQL-аудитор согласованности БД (`ConsistencyAuditor`).
+- **Автоматическое тестирование:** **62 теста (207 assertions)** — все проходят (`OK`).
 
 ---
 
 ## 2. Стек и установленные зависимости
 
-Спецификация из `composer.json` и `symfony.lock`:
+Согласно `composer.json`, `symfony.lock` и `Dockerfile`:
 
-| Компонент / Пакет | Версия | Назначение |
+| Компонент / Пакет | Версия / Образ | Назначение |
 |---|---|---|
-| **PHP** | `>= 8.4` (в контейнере 8.4.25) | Современные возможности: Typed Constants, Property Hooks, Constructor Promotion |
-| **Symfony Framework Bundle** | `8.1.*` | Ядро приложения, MicroKernel |
-| **Symfony Console** | `8.1.*` | CLI команды управления и бенчмаркинга |
-| **Symfony Serializer** | `8.1.*` | Преобразование JSON ↔ DTO |
-| **Symfony Validator** | `8.1.*` | Валидация входных данных DTO (`#[Assert\...]`) |
-| **Symfony Lock** | `8.1.*` | Распределенные мьютексы (`LockFactory`) для стратегии `mutex` |
-| **Symfony Dotenv & Yaml** | `8.1.*` | Загрузка конфигурации и переменных окружения |
-| **Doctrine ORM** | `^3.7` | Объектно-реляционное отображение, `#[ORM\Version]` |
-| **Doctrine Bundle** | `^3.3` | Интеграция Doctrine в Symfony DI |
-| **Doctrine Migrations Bundle** | `^4.0` | Управление версионированием схемы БД |
-| **PostgreSQL** | `16` (Alpine) | Реляционная СУБД, поддержка row-level locks и atomic conditional update |
-| **PHPUnit** (dev) | `^13.4` | Модульное, интеграционное и стресс-тестирование |
-| **Symfony BrowserKit & CssSelector** | `8.1.*` | Функциональное тестирование HTTP API (`WebTestCase`) |
+| **PHP** | `>= 8.4` (`php:8.4-fpm`, 8.4.27) | Расширения `pdo_pgsql`, `redis`, `amqp`, `opcache` |
+| **Symfony Framework / Console / Runtime** | `8.1.*` (v8.1.6) | Ядро приложения, CLI, runtime |
+| **Symfony Twig Bundle** | `8.1.*` | Серверный рендеринг веб-интерфейса (`templates/`) |
+| **Symfony Serializer & PropertyAccess/Info** | `8.1.*` | JSON-сериализация и маппинг DTO (`#[MapRequestPayload]`) |
+| **Symfony Validator** | `8.1.*` | Валидация DTO (`#[Assert\...]`) |
+| **Symfony Lock** | `8.1.*` | Распределённые мьютексы (`LockFactory`) поверх Redis |
+| **Symfony Messenger** | `8.1.*` | Шина сообщений и асинхронный воркер (AMQP / RabbitMQ) |
+| **Doctrine ORM / Bundle / Migrations** | `^3.7` / `^3.3` / `^4.0` | ORM, маппинг атрибутами, версионирование и миграции БД |
+| **PostgreSQL** | `postgres:16-alpine` | Основная реляционная СУБД (строковые блокировки, атомарные UPDATE) |
+| **Redis** | `redis:7-alpine` | In-memory фильтр идемпотентности и хранилище распределённых блокировок |
+| **RabbitMQ** | `rabbitmq:3-management-alpine` | Брокер сообщений (AMQP `5672`, Management UI `15672`) |
+| **Nginx** | `nginx:alpine` | Веб-сервер на порту `8080`, проксирование FastCGI в `php:9000` |
+| **PHPUnit** (dev) | `^13.4` | Юнит-, интеграционные, функциональные и стресс-тесты |
+| **BrowserKit / CssSelector / MakerBundle** (dev) | `8.1.*` / `^1.68` | Тестирование веб-форм/DOM и генерация кода |
 
 ---
 
-## 3. Архитектура и структура директорий
-
-Кодовая база структурирована по слоям (Clean Architecture / DDD-lite):
+## 3. Архитектура и структура кодовой базы
 
 ```text
 splitpay/
 ├── bin/
-│   ├── console                      # CLI Symfony
-│   └── phpunit                      # Раннер тестов
+│   ├── console                                # CLI Symfony
+│   └── phpunit                                # Запуск тестов
 ├── config/
-│   ├── packages/                    # Конфигурация framework, doctrine, cache, lock
-│   ├── routes.yaml                  # Автоподключение маршрутов из атрибутов
-│   └── services.yaml                # autowire/autoconfigure для App
-├── docker/
-│   └── nginx/default.conf           # Конфигурация Nginx: FastCGI к php:9000
+│   ├── bundles.php                            # Framework, Doctrine, Migrations, Twig, Maker(dev)
+│   ├── packages/
+│   │   ├── cache.yaml
+│   │   ├── doctrine.yaml                      # underscore naming, identity, _test суффикс
+│   │   ├── doctrine_migrations.yaml
+│   │   ├── framework.yaml
+│   │   ├── lock.yaml                          # LOCK_DSN (%env(LOCK_DSN)%)
+│   │   ├── messenger.yaml                     # AMQP async + failed DLQ (sync:// в test)
+│   │   ├── property_info.yaml
+│   │   ├── routing.yaml
+│   │   ├── twig.yaml                          # strict_variables: true в test
+│   │   └── validator.yaml
+│   ├── routes.yaml                            # Импорт атрибутов #[Route] из src/Controller/
+│   └── services.yaml                          # autowire/autoconfigure для App\
+├── docker/nginx/default.conf
 ├── migrations/
-│   ├── Version20260918162837.php    # Первоначальная миграция
-│   ├── Version20261007193107.php    # Промежуточная схема
-│   └── Version20261102130644.php    # Переход на центы, индексы, idempotency_key, version
+│   ├── Version20260918162837.php
+│   ├── Version20261007193107.php
+│   └── Version20261102130644.php              # Финальная схема: центы, status, version, idempotency_key
 ├── src/
-│   ├── Benchmark/                   # Инфраструктура бенчмарка и аудита
-│   │   ├── AuditResult.php          # DTO результата SQL-аудита
-│   │   ├── BenchmarkResult.php      # DTO результатов прогона (RPS, латентность, коды ответов)
-│   │   ├── BenchmarkRunner.php      # Асинхронный генератор нагрузки на curl_multi
-│   │   └── ConsistencyAuditor.php   # Независимый верификатор согласованности данных в БД
+│   ├── Benchmark/
+│   │   ├── AuditResult.php                    # DTO результата проверки целостности БД
+│   │   ├── BenchmarkResult.php                # DTO метрик (RPS, P50/P95/P99, 201/409/422/5xx)
+│   │   ├── BenchmarkRunner.php                # Многопоточный HTTP-раннер через curl_multi
+│   │   └── ConsistencyAuditor.php             # Прямой SQL-аудит orders vs SUM(payments)
 │   ├── Command/
-│   │   └── BenchmarkRunCommand.php  # Консольная команда app:benchmark:run
+│   │   └── BenchmarkRunCommand.php            # CLI app:benchmark:run
 │   ├── Controller/
-│   │   ├── OrderController.php      # POST /orders, GET /orders/{id}
-│   │   ├── PaymentController.php    # POST /payments/{orderId}, GET /payments/{id}
-│   │   └── UserController.php       # POST /users, GET /users/{id}
+│   │   ├── OrderController.php                # API: POST /orders, GET /orders/{id}
+│   │   ├── PaymentController.php              # API: POST /payments/{orderId}, GET /payments/{id}
+│   │   ├── UserController.php                 # API: POST /users, GET /users/{id}
+│   │   └── Web/
+│   │       ├── DashboardController.php        # Web: GET /, GET /dashboard
+│   │       ├── WebBenchmarkController.php     # Web: GET /benchmark, POST /benchmark/run
+│   │       ├── WebOrderController.php         # Web: POST /web/orders, GET /web/orders/{id}, POST /web/orders/{id}/pay
+│   │       └── WebUserController.php          # Web: POST /web/users
 │   ├── DTO/
 │   │   ├── Order/CreateOrderRequest.php
 │   │   ├── Payment/ProcessPaymentRequest.php
 │   │   └── User/CreateUserRequest.php
 │   ├── Entity/
-│   │   ├── Order.php                # Заказ (полная цена, оплачено, статус, версия)
-│   │   ├── Payment.php              # Платеж (сумма, метод, ключ идемпотентности, дата)
-│   │   └── User.php                 # Пользователь/плательщик
+│   │   ├── Order.php
+│   │   ├── Payment.php
+│   │   └── User.php
 │   ├── Enum/
-│   │   ├── OrderStatus.php          # open | paid | cancelled
-│   │   └── PaymentMethod.php        # card | cash
+│   │   ├── OrderStatus.php                    # open | paid | cancelled
+│   │   └── PaymentMethod.php                  # card | cash
 │   ├── Exception/
-│   │   ├── IdempotencyConflictException.php       # HTTP 409
-│   │   ├── OptimisticLockExhaustedException.php   # HTTP 409
-│   │   ├── OrderNotOpenException.php              # HTTP 409
-│   │   └── OverpaymentException.php               # HTTP 422
+│   │   ├── IdempotencyConflictException.php   # 409 Conflict
+│   │   ├── OptimisticLockExhaustedException.php # 409 Conflict
+│   │   ├── OrderNotOpenException.php          # 409 Conflict
+│   │   └── OverpaymentException.php           # 422 Unprocessable Entity
+│   ├── Message/
+│   │   ├── OrderFullyPaidEvent.php            # Событие полной оплаты заказа
+│   │   └── PaymentReceivedEvent.php           # Событие регистрации платежа
+│   ├── MessageHandler/
+│   │   ├── SendOrderPaidWebhookHandler.php    # Логирует отправку webhook мерчанту
+│   │   └── SendPaymentReceiptHandler.php      # Логирует отправку чека пользователю
 │   ├── Payment/
+│   │   ├── Idempotency/
+│   │   │   ├── IdempotencyFilterInterface.php
+│   │   │   └── RedisIdempotencyFilter.php     # Stripe-паттерн: acquire / commit / release в Redis
+│   │   ├── Strategy/
+│   │   │   ├── AtomicConditionalUpdateStrategy.php
+│   │   │   ├── BaselineStrategy.php
+│   │   │   ├── OptimisticLockStrategy.php
+│   │   │   ├── PessimisticLockStrategy.php
+│   │   │   └── SymfonyLockStrategy.php
 │   │   ├── PaymentResult.php
-│   │   ├── PaymentStrategyInterface.php           # Единый контракт стратегий
-│   │   ├── StrategyRegistry.php                   # DI-реестр стратегий (#[AutowireIterator])
-│   │   └── Strategy/
-│   │       ├── AtomicConditionalUpdateStrategy.php # Стратегия 5: Атомарный SQL UPDATE
-│   │       ├── BaselineStrategy.php               # Стратегия 1: Без блокировок (контрольная)
-│   │       ├── OptimisticLockStrategy.php         # Стратегия 3: #[ORM\Version] + Retry
-│   │       ├── PessimisticLockStrategy.php        # Стратегия 2: SELECT ... FOR UPDATE
-│   │       └── SymfonyLockStrategy.php            # Стратегия 4: Мьютекс на уровне приложения
+│   │   ├── PaymentStrategyInterface.php       # #[AutoconfigureTag('app.payment_strategy')]
+│   │   └── StrategyRegistry.php
 │   ├── Repository/
 │   │   ├── OrderRepository.php
 │   │   ├── PaymentRepository.php
 │   │   └── UserRepository.php
 │   ├── Service/
 │   │   ├── OrderService.php
-│   │   ├── PaymentService.php       # Оркестратор проверки существования и делегирования
+│   │   ├── PaymentService.php                 # Оркестрация: Redis filter -> DB strategy -> RabbitMQ
 │   │   └── UserService.php
 │   └── Kernel.php
-└── tests/                           # 47 автоматических тестов
-    ├── Benchmark/ConsistencyAuditorTest.php
-    ├── Command/BenchmarkRunCommandTest.php
-    ├── Controller/OrderControllerTest.php
-    ├── Controller/PaymentControllerTest.php
-    ├── Controller/UserControllerTest.php
-    ├── Payment/ConcurrencyStressTest.php
-    ├── Payment/Strategy/StrategyIntegrationTest.php
-    └── Service/PaymentServiceTest.php
+├── templates/
+│   ├── base.html.twig                         # Bootstrap 5.3 + навигация + модалки создания
+│   ├── benchmark/index.html.twig              # Живой запуск и визуализация метрик стратегий
+│   ├── dashboard/index.html.twig              # Сводная статистика и список заказов
+│   └── order/show.html.twig                   # Детали заказа, прогресс-бар, форма оплаты, платежи
+└── tests/                                     # 62 теста (207 assertions)
 ```
 
 ---
 
 ## 4. Доменная модель и бизнес-инварианты
 
-### Сущности (Таблицы PostgreSQL)
+### Сущности БД (PostgreSQL 16)
 
 1. **`User` (таблица `users`):**
-   - `id` (int, PK)
+   - `id` (int, PK, identity)
    - `name` (string, 2–255 символов)
    - `createdAt` (DateTimeImmutable)
-   - Связи: `orders` (OneToMany), `payments` (OneToMany)
+   - Связи: `orders` (`OneToMany`), `payments` (`OneToMany`)
 
 2. **`Order` (таблица `orders`):**
-   - `id` (int, PK)
-   - `name` (string)
-   - `fullPriceCents` (int, положительное целое) — общая стоимость заказа
-   - `paidPriceCents` (int) — денормализованная сумма подтвержденных платежей
-   - `status` (OrderStatus: `open`, `paid`, `cancelled`)
-   - `version` (int, `#[ORM\Version]`) — версионный счетчик для оптимистической блокировки
+   - `id` (int, PK, identity)
+   - `name` (string, 2–255 символов)
+   - `fullPriceCents` (int, > 0) — полная стоимость заказа в центах
+   - `paidPriceCents` (int, >= 0) — денормализованная сумма подтверждённых платежей
+   - `status` (`OrderStatus`: `open`, `paid`, `cancelled`)
+   - `version` (int, `#[ORM\Version]`) — счётчик версии для оптимистической блокировки
    - `createdAt`, `updatedAt` (DateTimeImmutable)
-   - `user_id` (ManyToOne, владелец заказа)
-   - Методы: `getRemainingCents()`, `isFullyPaid()`, `canAcceptPayment()`
+   - `user` (`ManyToOne`, NOT NULL) — владелец заказа
+   - Доменные методы: `getRemainingCents()`, `isFullyPaid()`, `canAcceptPayment()`
 
 3. **`Payment` (таблица `payments`):**
-   - `id` (int, PK)
-   - `amountCents` (int, > 0)
-   - `paymentMethod` (PaymentMethod: `card`, `cash`)
-   - `idempotencyKey` (string, max 255, **UNIQUE INDEX**) — глобальный ключ идемпотентности
+   - `id` (int, PK, identity)
+   - `amountCents` (int, > 0) — сумма платежа в центах
+   - `paymentMethod` (`PaymentMethod`: `card`, `cash`)
+   - `idempotencyKey` (string, <= 255, **UNIQUE INDEX**) — глобальный ключ идемпотентности
    - `createdAt` (DateTimeImmutable)
-   - `user_id` (ManyToOne, плательщик)
-   - `order_id` (ManyToOne, оплачиваемый заказ)
+   - `user` (`ManyToOne`, NOT NULL) — плательщик
+   - `order` (`ManyToOne`, NOT NULL) — заказ
 
-### Бизнес-инварианты (Core Research Invariants)
+### Инварианты согласованности (I1–I5)
 
-- **I1 (No Overpayment):** Сумма всех успешных платежей заказа никогда не должна превышать `order.fullPriceCents`.
-- **I2 (Data Consistency):** Поле `order.paidPriceCents` обязано строго равняться реальной сумме `SUM(payments.amountCents)` в БД.
-- **I3 (Balance Check):** Платеж принимается только если `amountCents <= remainingCents` и заказ находится в статусе `open`.
-- **I4 (No Lost Updates):** Параллельные транзакции не должны перезаписывать результаты друг друга.
-- **I5 (Global Idempotency):** Повторная отправка запроса с тем же `idempotencyKey` не приводит к повторному списанию и возвращает `409 Conflict`.
-
----
-
-## 5. Стратегии конкурентности (Payment Strategies)
-
-Все стратегии реализуют общий интерфейс `PaymentStrategyInterface` и автоматически собираются через тег `app.payment_strategy` в `StrategyRegistry`.
-
-| Идентификатор | Класс | Механизм синхронизации | Уровень защиты | Особенности поведения |
-|---|---|---|---|---|
-| **`baseline`** | `BaselineStrategy` | Отсутствует | ❌ Нет (Контрольная группа) | Read-then-write без блокировок. При конкурентности демонстрирует race condition, overpayment и потерю обновлений. |
-| **`pessimistic`** | `PessimisticLockStrategy` | `LockMode::PESSIMISTIC_WRITE` | ✅ База данных (Row Lock) | Выполняет `SELECT ... FOR UPDATE`. Очередь запросов сериализуется на уровне строки PostgreSQL. |
-| **`optimistic`** | `OptimisticLockStrategy` | `#[ORM\Version]` + Retry | ✅ Слой ORM (Doctrine) | Проверяет совпадение версии при `flush()`. При конфликте ловит `OptimisticLockException`, сбрасывает Identity Map и делает до 3 попыток. |
-| **`mutex`** | `SymfonyLockStrategy` | `Symfony\Component\Lock` | ✅ Уровень приложения | Захватывает мьютекс `order:{id}` через `LockFactory` (flock/redis), открывает транзакцию и принудительно вызывает `$em->refresh($order)` для исключения застарелого чтения. |
-| **`atomic`** | `AtomicConditionalUpdateStrategy` | Условный атомарный SQL `UPDATE` | ✅ Ядро СУБД (SQL Statement) | Выполняет атомарный `UPDATE orders SET paid_price_cents = paid_price_cents + :amount WHERE id = :id AND status = 'open' AND paid_price_cents + :amount <= full_price_cents`. Максимальный RPS. |
+- **I1 (No Overpayment):** Сумма успешных платежей по заказу не превышает `order.fullPriceCents`.
+- **I2 (Data Consistency):** Поле `order.paidPriceCents` строго равно `SUM(payments.amountCents)`.
+- **I3 (Balance Check):** Платёж принимается только при статусе `open` и `amountCents <= remainingCents`.
+- **I4 (No Lost Updates):** Параллельные успешные платежи не перезаписывают обновления друг друга.
+- **I5 (Global Idempotency):** Повторный запрос с тем же `idempotencyKey` отклоняется с `409 Conflict` без повторного проведения.
 
 ---
 
-## 6. HTTP API и маршрутизация
+## 5. Поток обработки платежа (Redis + Strategy + RabbitMQ)
 
-Все эндпоинты типизированы, валидируются через DTO и возвращают JSON:
+Оркестрация выполняется в [`PaymentService::pay()`](file:///\\wsl.localhost\Ubuntu\home\c959\projects\splitpay\src\Service\PaymentService.php):
 
 ```text
-POST /users                 Создание пользователя (201 Created)
-GET  /users/{id}            Просмотр пользователя (200 OK / 404)
-POST /orders                Создание заказа (201 Created)
-GET  /orders/{id}           Просмотр заказа с балансом и статусом (200 OK / 404)
-POST /payments/{orderId}    Проведение платежа по выбранной стратегии (201 Created)
-GET  /payments/{id}         Просмотр записи платежа (200 OK / 404)
+HTTP POST /payments/{orderId}  (или POST /web/orders/{id}/pay)
+  │
+  ▼
+1. RedisIdempotencyFilter::acquire(key)
+   └─ SET idempotency:{key} "processing" NX EX 60
+   └─ Если ключ уже существует → немедленный HTTP 409 Conflict (без обращения к PostgreSQL)
+  │
+  ▼
+2. Загрузка Order и User (404 если отсутствуют; при ошибке ключ в Redis освобождается)
+  │
+  ▼
+3. Выполнение выбранной PaymentStrategyInterface внутри транзакции PostgreSQL
+   ├─ При UniqueConstraintViolationException → IdempotencyConflictException (commit в Redis + 409)
+   └─ При Overpayment / OrderNotOpen / иной ошибке → release(key) в Redis (можно повторить)
+  │
+  ▼
+4. RedisIdempotencyFilter::commit(key, paymentId)
+   └─ SET idempotency:{key} "completed" EX 86400 (хранение 24 часа)
+  │
+  ▼
+5. Асинхронная отправка событий в RabbitMQ (MessageBusInterface::dispatch)
+   ├─ PaymentReceivedEvent (всегда при успешной оплате)
+   └─ OrderFullyPaidEvent  (если заказ перешёл в состояние полной оплаты)
 ```
 
-### Коды ошибок API:
-- **`404 Not Found`**: Не существует указанный `userId`, `orderId` или `paymentId`.
-- **`409 Conflict`**: Заказ закрыт (`OrderNotOpenException`), дубликат ключа идемпотентности (`IdempotencyConflictException`), либо исчерпан лимит повторов оптимистической блокировки (`OptimisticLockExhaustedException`).
-- **`422 Unprocessable Entity`**: Ошибка валидации DTO (невалидный email, отрицательная сумма, некорректный enum) или попытка переплаты сверх остатка (`OverpaymentException`).
+### Стратегии синхронизации (`src/Payment/Strategy/`)
+
+| Стратегия | Класс | Механизм | Уровень | Поведение и особенности |
+|---|---|---|---|---|
+| **`baseline`** | `BaselineStrategy` | Без блокировок | ❌ Нет защиты | Контрольная группа. Read-then-write без лока приводит к race condition, lost updates и переплате. |
+| **`pessimistic`** | `PessimisticLockStrategy` | `SELECT ... FOR UPDATE` (`LockMode::PESSIMISTIC_WRITE`) | ✅ БД (строка) | Перечитывает заказ с эксклюзивной блокировкой строки. Очередь запросов выстраивается в PostgreSQL. Ловит `UniqueConstraintViolationException`. |
+| **`optimistic`** | `OptimisticLockStrategy` | `#[ORM\Version]` + retry | ✅ ORM | При конфликте версий откатывает транзакцию, вызывает `ManagerRegistry::resetManager()` и повторяет попытку (до `MAX_RETRIES = 3`), иначе кидает `OptimisticLockExhaustedException` (409). |
+| **`mutex`** | `SymfonyLockStrategy` | `symfony/lock` (`LOCK_DSN=redis://redis:6379`) | ✅ Приложение (Redis) | Захватывает распределённый мьютекс `order:{id}` (TTL 10s), открывает транзакцию и **принудительно обновляет сущность через `$em->refresh($order)`** после получения лока. Ловит `UniqueConstraintViolationException`. |
+| **`atomic`** | `AtomicConditionalUpdateStrategy` | Одиночный условный SQL `UPDATE` | ✅ Ядро БД | Выполняет проверку остатка, инкремент `paid_price_cents`, инкремент `version` и смену статуса `open -> paid` одним SQL-запросом без ручных блокировок. Максимальный RPS. |
 
 ---
 
-## 7. Бенчмаркинг и верификация (Benchmark & Auditing)
+## 6. Асинхронный обмен сообщениями (RabbitMQ + Messenger)
 
-Проект содержит встроенный модуль экспериментального нагрузочного тестирования:
+Конфигурация в [`config/packages/messenger.yaml`](file:///\\wsl.localhost\Ubuntu\home\c959\projects\splitpay\config\packages\messenger.yaml):
 
-- **Консольная команда:** `php bin/console app:benchmark:run`
-  - Параметры: `--strategy` (`baseline`, `pessimistic`, `optimistic`, `mutex`, `atomic`, `all`), `--requests`, `--concurrency`, `--order-full-price`, `--payment-amount`, `--format` (`table`, `markdown`, `json`).
-- **`BenchmarkRunner`:** Создает сценарий и параллельно отправляет пачки запросов через `curl_multi` в Nginx. Рассчитывает время, RPS, распределение кодов и перцентили задержек (`P50`, `P95`, `P99`).
-- **`ConsistencyAuditor`:** Подключается напрямую к БД и выполняет независимый SQL-аудит:
-  - Сравнивает `orders.paid_price_cents` и `SUM(payments.amount_cents)`.
-  - Фиксирует факты рассинхронизации (`isConsistent`) и переплаты (`isOverpaid`).
-
----
-
-## 8. Инфраструктура (Docker)
-
-Окружение разворачивается через Docker Compose:
-
-- **`php`:** PHP 8.4 FPM (`php:8.4-fpm`), расширения `pdo_pgsql`, `amqp`, `opcache`. Том проекта примонтирован в `/var/www/html`.
-- **`nginx`:** Nginx 1.25+ Alpine, проксирует HTTP-трафик на порт 9000 PHP-FPM. Публикует порт **8080** на хосте.
-- **`database`:** PostgreSQL 16 Alpine. Внутренний порт 5432, БД `splitpay`.
+- **Транспорт `async`:** `MESSENGER_TRANSPORT_DSN=amqp://guest:guest@rabbitmq:5672/%2f/messages`
+  - Exchange: `splitpay_events` (`fanout`), очередь: `splitpay_async` (`auto_setup: true`).
+  - Retry-стратегия: `max_retries: 3`, экспоненциальная задержка (`delay: 1000`, `multiplier: 2`, `max_delay: 10000` → 1s → 2s → 4s).
+- **Транспорт `failed` (DLQ):**
+  - Exchange: `splitpay_dlq` (`fanout`), очередь: `splitpay_failed`.
+- **Обработчики (`src/MessageHandler/`):**
+  - `SendPaymentReceiptHandler` ← `PaymentReceivedEvent` (имитация отправки чека плательщику, логирование через `LoggerInterface`).
+  - `SendOrderPaidWebhookHandler` ← `OrderFullyPaidEvent` (имитация исходящего webhook мерчанту).
+- **Окружение `test`:** Транспорты `async` и `failed` переопределены на `sync://`, поэтому тесты не зависят от запущенного воркера и очереди RabbitMQ.
 
 ---
 
-## 9. Автоматическое тестирование
+## 7. HTTP API и Веб-интерфейс (Маршруты)
 
-Тестовый набор (`tests/`) включает **47 тестов (121 assertion)**:
-1. `tests/Controller/`: Тесты эндпоинтов, валидации схем, кодов 200, 201, 404, 409, 422.
-2. `tests/Payment/Strategy/StrategyIntegrationTest.php`: 22 интеграционных теста, проверяющих каждую стратегию изолированно в тестовой БД.
-3. `tests/Payment/ConcurrencyStressTest.php`: 5 параллельных стресс-тестов на реальном пуле PHP-FPM, подтверждающих сбой `baseline` и абсолютную математическую согласованность `pessimistic`, `optimistic`, `mutex` и `atomic`.
-4. `tests/Benchmark/`: Тестирование аудитора целостности и расчетов перцентилей.
-5. `tests/Command/`: Проверка консольной команды бенчмарка.
+Полный список маршрутов (по `bin/console debug:router`):
+
+### REST API (JSON)
+
+| Метод | Путь | Имя маршрута | Контроллер | Назначение |
+|---|---|---|---|---|
+| `POST` | `/users` | `user_create` | `UserController::store` | Создание пользователя (`CreateUserRequest` → `201`) |
+| `GET` | `/users/{id}` | `user_show` | `UserController::show` | Получение пользователя (`200` / `404`) |
+| `POST` | `/orders` | `order_create` | `OrderController::store` | Создание заказа (`CreateOrderRequest` → `201` / `404`) |
+| `GET` | `/orders/{id}` | `order_show` | `OrderController::show` | Информация о заказе с `remainingCents`, `status`, `version` |
+| `POST` | `/payments/{orderId}` | `payment_create` | `PaymentController::create` | Проведение платежа (`ProcessPaymentRequest` → `201` / `404` / `409` / `422`) |
+| `GET` | `/payments/{id}` | `payment_show` | `PaymentController::show` | Информация о платеже (`200` / `404`) |
+
+### Веб-интерфейс (Twig + Bootstrap 5.3, украинский язык)
+
+| Метод | Путь | Имя маршрута | Контроллер | Назначение |
+|---|---|---|---|---|
+| `GET` | `/` и `/dashboard` | `web_dashboard` / `web_dashboard_alias` | `DashboardController::index` | Дашборд со сводной статистикой и таблицей заказов |
+| `POST` | `/web/users` | `web_user_create` | `WebUserController::create` | Создание пользователя через модальную форму |
+| `POST` | `/web/orders` | `web_order_create` | `WebOrderController::create` | Создание заказа через модальную форму |
+| `GET` | `/web/orders/{id}` | `web_order_show` | `WebOrderController::show` | Карточка заказа, прогресс, история платежей, форма оплаты |
+| `POST` | `/web/orders/{id}/pay` | `web_order_pay` | `WebOrderController::pay` | Проведение платежа из UI с выбором стратегии и flash-статусом |
+| `GET` | `/benchmark` | `web_benchmark` | `WebBenchmarkController::index` | Страница интерактивного бенчмаркинга |
+| `POST` | `/benchmark/run` | `web_benchmark_run` | `WebBenchmarkController::run` | Живой запуск `BenchmarkRunner` и визуализация P50/P95/P99/RPS и аудита |
 
 ---
 
-## 10. Краткая памятка команд
+## 8. Инфраструктура (Docker Compose)
+
+Сервисы в [`compose.yaml`](file:///\\wsl.localhost\Ubuntu\home\c959\projects\splitpay\compose.yaml):
+
+| Сервис | Образ / Сборка | Порты на хосте | Назначение |
+|---|---|---|---|
+| **`php`** | `Dockerfile` (`php:8.4-fpm` + `pdo_pgsql`, `redis`, `amqp`) | `9000` (внутр.) | Обработка PHP-FPM запросов, выполнение CLI и Messenger-воркеров |
+| **`nginx`** | `nginx:alpine` | `8080 -> 80` | Веб-сервер для API и Twig UI (`http://localhost:8080`) |
+| **`database`** | `postgres:16-alpine` | `5432 -> 5432` | Основная БД `splitpay` (и `splitpay_test` для PHPUnit) |
+| **`redis`** | `redis:7-alpine` | `6379 -> 6379` | Хранилище для `RedisIdempotencyFilter` и `symfony/lock` |
+| **`rabbitmq`** | `rabbitmq:3-management-alpine` | `5672 -> 5672`, `15672 -> 15672` | AMQP брокер + Management UI (`http://localhost:15672`, `guest`/`guest`) |
+
+---
+
+## 9. Тестирование и валидация
+
+Статус по итогам прогона `docker compose exec php php bin/phpunit`:
+- **Всего тестов:** **62** (`207 assertions`) — **100% проходят** (присутствуют 2 минорных предупреждения PHPUnit 13 по использованию `createMock()` вместо `createStub()`).
+- **Валидация Symfony:** `lint:container`, `lint:twig templates/`, `lint:yaml config/` и `doctrine:schema:validate` — **все [OK]**.
+
+Разбивка тестового набора (`tests/`):
+- `tests/Controller/`: `UserControllerTest`, `OrderControllerTest`, `PaymentControllerTest` (JSON API), `Web/WebInterfaceTest` (Twig UI, редиректы, flash-сообщения, конфликты и переплаты).
+- `tests/Payment/Strategy/StrategyIntegrationTest.php`: 22 теста всех 5 стратегий против реальной БД `splitpay_test` (включая проверку refresh устаревшего состояния для `mutex`).
+- `tests/Payment/ConcurrencyStressTest.php`: 5 параллельных HTTP-стресс-тестов через Nginx → PHP-FPM (`baseline` демонстрирует race condition, а `pessimistic`, `optimistic`, `mutex` и `atomic` строго удерживают инварианты I1–I5).
+- `tests/Payment/Idempotency/RedisIdempotencyFilterTest.php`: Тесты атомарного захвата, конфликта, освобождения и 24h-фиксации ключей в реальном Redis.
+- `tests/Service/`: `PaymentServiceTest`, `PaymentPostProcessingTest` (проверка Redis-фильтра, обработки ретраев `OptimisticLockStrategy` и диспатча `PaymentReceivedEvent` / `OrderFullyPaidEvent`).
+- `tests/MessageHandler/` и `tests/Messenger/`: `SendPaymentReceiptHandlerTest`, `SendOrderPaidWebhookHandlerTest`, `MessengerFailureAndRetryTest`.
+- `tests/Benchmark/` и `tests/Command/`: `ConsistencyAuditorTest`, `BenchmarkRunCommandTest`.
+
+---
+
+## 10. Заметки по техническим нюансам и потенциальным доработкам
+
+В ходе анализа кодовой базы учтены следующие архитектурные особенности:
+
+1. **Пост-обработка событий после retry в `OptimisticLockStrategy` (`PaymentService::pay`) — [ИСПРАВЛЕНО]:**
+   - В [`PaymentService.php`](file:///\\wsl.localhost\Ubuntu\home\c959\projects\splitpay\src\Service\PaymentService.php#L79-L108) пост-обработка теперь использует `$resolvedOrder = $payment->getOrder() ?? $order` и `$resolvedUser = $payment->getUser() ?? $user`. Это гарантирует, что при перезапуске `EntityManager` внутри [`OptimisticLockStrategy`](file:///\\wsl.localhost\Ubuntu\home\c959\projects\splitpay\src\Payment\Strategy\OptimisticLockStrategy.php) событие [`OrderFullyPaidEvent`](file:///\\wsl.localhost\Ubuntu\home\c959\projects\splitpay\src\Message\OrderFullyPaidEvent.php) корректно диспатчится в RabbitMQ на основе актуального состояния заказа.
+2. **Взаимодействие `RedisIdempotencyFilter` с бенчмарком:**
+   - Так как `BenchmarkRunner` генерирует уникальный `idempotencyKey` на каждый запрос, Redis-префильтр пропускает все запросы в PostgreSQL, не искажая тестирование конкурентности БД. В реальном же сценарии дубликаты отсекаются на уровне Redis за миллисекунды.
+3. **Разделение форматов сумм:**
+   - REST API принимает суммы строго в целых центах (`fullPriceCents`, `amountCents`), тогда как веб-формы в `WebOrderController` и `WebBenchmarkController` принимают доллары с плавающей точкой (`full_price_dollars`, `amount_dollars`) и конвертируют их через `(int) round($dollars * 100)`.
+4. **Безопасность веб-интерфейса:**
+   - В проекте намеренно отсутствуют `SecurityBundle`, авторизация и CSRF-токены на веб-формах (экспериментальный стенд для локального запуска).
+5. **PHPUnit 13 warnings:**
+   - В старых тестах с заглушками без ожиданий (`createMock()` без `expects()`) PHPUnit 13 выводит 2 notice/deprecation; их можно заменить на `createStub()` для полностью чистого вывода.
+
+---
+
+## 11. Быстрые команды (для разработчика и агента)
 
 ```bash
-# Запуск контейнеров
-docker compose up -d
+# Поднять всю инфраструктуру (php, nginx, database, redis, rabbitmq)
+docker compose up -d --build
 
-# Миграции БД
+# Применить миграции БД
 docker compose exec php php bin/console doctrine:migrations:migrate --no-interaction
 
-# Прогрев / очистка кеша
-docker compose exec php php bin/console cache:clear
-docker compose exec php php bin/console cache:warmup
+# Запустить воркер обработки очередей RabbitMQ (чеки и вебхуки)
+docker compose exec php php bin/console messenger:consume async -vv
 
-# Запуск полного набора автотестов
+# Проверить валидность контейнера, шаблонов Twig, YAML и схемы БД
+docker compose exec php php bin/console lint:container
+docker compose exec php php bin/console lint:twig templates/
+docker compose exec php php bin/console lint:yaml config/
+docker compose exec php php bin/console doctrine:schema:validate
+
+# Запустить все 62 теста
 docker compose exec php php bin/phpunit
 
-# Запуск бенчмарка по всем стратегиям
+# Запустить бенчмарк всех 5 стратегий из CLI
 docker compose exec php php bin/console app:benchmark:run --strategy all --requests 50 --concurrency 10
 ```
