@@ -6,6 +6,7 @@ namespace App\Command;
 
 use App\Benchmark\BenchmarkResult;
 use App\Benchmark\BenchmarkRunner;
+use App\Benchmark\PaymentIntent;
 use App\Entity\Order;
 use App\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
@@ -32,6 +33,7 @@ final class BenchmarkRunCommand extends Command
     {
         $this
             ->addOption('strategy', null, InputOption::VALUE_REQUIRED, 'Strategy to benchmark: baseline, pessimistic, optimistic, mutex, atomic, or all.', 'baseline')
+            ->addOption('users', null, InputOption::VALUE_REQUIRED, 'Number of distinct concurrent payer users.', '1')
             ->addOption('requests', null, InputOption::VALUE_REQUIRED, 'Number of HTTP requests.', '50')
             ->addOption('concurrency', null, InputOption::VALUE_REQUIRED, 'Maximum concurrent HTTP requests.', '10')
             ->addOption('order-full-price', null, InputOption::VALUE_REQUIRED, 'Order total in cents.', '10000')
@@ -42,6 +44,7 @@ final class BenchmarkRunCommand extends Command
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $strategy = (string) $input->getOption('strategy');
+        $usersCount = filter_var($input->getOption('users'), FILTER_VALIDATE_INT);
         $requests = filter_var($input->getOption('requests'), FILTER_VALIDATE_INT);
         $concurrency = filter_var($input->getOption('concurrency'), FILTER_VALIDATE_INT);
         $orderFullPriceCents = filter_var($input->getOption('order-full-price'), FILTER_VALIDATE_INT);
@@ -58,6 +61,11 @@ final class BenchmarkRunCommand extends Command
 
             return Command::INVALID;
         }
+        if (!is_int($usersCount) || $usersCount < 1) {
+            $output->writeln('<error>Users must be a positive integer.</error>');
+
+            return Command::INVALID;
+        }
         if (!is_int($requests) || !is_int($concurrency) || !is_int($orderFullPriceCents) || !is_int($paymentAmountCents)
             || $requests < 1 || $concurrency < 1 || $orderFullPriceCents < 1 || $paymentAmountCents < 1) {
             $output->writeln('<error>Requests, concurrency, order price, and payment amount must be positive integers.</error>');
@@ -70,15 +78,33 @@ final class BenchmarkRunCommand extends Command
 
         try {
             foreach ($strategies as $currentStrategy) {
-                [$orderId, $userId] = $this->createScenario($orderFullPriceCents);
-                $results[] = $this->benchmarkRunner->run(
-                    $currentStrategy,
-                    $orderId,
-                    $userId,
-                    $requests,
-                    $concurrency,
-                    $paymentAmountCents,
-                );
+                if ($usersCount === 1) {
+                    [$orderId, $userId] = $this->createScenario($orderFullPriceCents);
+                    $results[] = $this->benchmarkRunner->run(
+                        $currentStrategy,
+                        $orderId,
+                        $userId,
+                        $requests,
+                        $concurrency,
+                        $paymentAmountCents,
+                    );
+                } else {
+                    [$orderId, $userIds] = $this->createMultiUserScenario($orderFullPriceCents, $usersCount);
+                    $intents = [];
+                    for ($i = 0; $i < $requests; ++$i) {
+                        $intents[] = new PaymentIntent(
+                            userId: $userIds[$i % $usersCount],
+                            amountCents: $paymentAmountCents,
+                            paymentMethod: $i % 2 === 0 ? 'card' : 'cash',
+                        );
+                    }
+                    $results[] = $this->benchmarkRunner->runConcurrentPayments(
+                        $currentStrategy,
+                        $orderId,
+                        $intents,
+                        $concurrency,
+                    )->benchmark;
+                }
             }
         } catch (\Throwable $exception) {
             $output->writeln(sprintf('<error>Benchmark failed: %s</error>', $exception->getMessage()));
@@ -86,7 +112,7 @@ final class BenchmarkRunCommand extends Command
             return Command::FAILURE;
         }
 
-        $this->renderResults($results, $format, $output);
+        $this->renderResults($results, $format, $output, $usersCount);
 
         return Command::SUCCESS;
     }
@@ -109,8 +135,39 @@ final class BenchmarkRunCommand extends Command
         return [$orderId, $userId];
     }
 
+    /** @return array{int, list<int>} order ID then list of user IDs */
+    private function createMultiUserScenario(int $orderFullPriceCents, int $usersCount): array
+    {
+        $users = [];
+        for ($u = 0; $u < $usersCount; ++$u) {
+            $user = new User('Benchmark User #' . ($u + 1) . ' ' . bin2hex(random_bytes(4)));
+            $this->entityManager->persist($user);
+            $users[] = $user;
+        }
+
+        $order = new Order('Benchmark Order', $orderFullPriceCents, $users[0]);
+        $this->entityManager->persist($order);
+        $this->entityManager->flush();
+
+        $orderId = $order->getId();
+        if ($orderId === null) {
+            throw new \RuntimeException('Failed to persist the benchmark scenario.');
+        }
+
+        $userIds = [];
+        foreach ($users as $user) {
+            $userId = $user->getId();
+            if ($userId === null) {
+                throw new \RuntimeException('Failed to persist the benchmark scenario.');
+            }
+            $userIds[] = $userId;
+        }
+
+        return [$orderId, $userIds];
+    }
+
     /** @param list<BenchmarkResult> $results */
-    private function renderResults(array $results, string $format, OutputInterface $output): void
+    private function renderResults(array $results, string $format, OutputInterface $output, int $usersCount): void
     {
         if ($format === 'json') {
             $output->writeln(json_encode($results, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
@@ -118,8 +175,8 @@ final class BenchmarkRunCommand extends Command
             return;
         }
 
-        $headers = ['Strategy', 'Concurrency / Requests', 'RPS', 'P50 ms', 'P95 ms', 'P99 ms', '201', '409', '422', '5xx', 'Paid / Actual', 'Overpaid', 'Consistent'];
-        $rows = array_map(fn (BenchmarkResult $result): array => $this->row($result), $results);
+        $headers = ['Strategy', 'Concurrency / Requests', 'Users', 'RPS', 'P50 ms', 'P95 ms', 'P99 ms', '201', '409', '422', '5xx', 'Paid / Actual', 'Overpaid', 'Consistent'];
+        $rows = array_map(fn (BenchmarkResult $result): array => $this->row($result, $usersCount), $results);
 
         if ($format === 'table') {
             $table = new Table($output);
@@ -136,13 +193,14 @@ final class BenchmarkRunCommand extends Command
     }
 
     /** @return list<string|int|float> */
-    private function row(BenchmarkResult $result): array
+    private function row(BenchmarkResult $result, int $usersCount): array
     {
         $audit = $result->audit;
 
         return [
             $result->strategy,
             sprintf('%d / %d', $result->concurrency, $result->totalRequests),
+            $usersCount,
             number_format($result->requestsPerSecond, 2),
             number_format($result->latencyP50Ms, 2),
             number_format($result->latencyP95Ms, 2),

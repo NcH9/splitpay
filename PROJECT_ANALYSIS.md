@@ -17,9 +17,9 @@
 - **Async Messaging (RabbitMQ + Symfony Messenger):** Асинхронная публикация доменных событий `PaymentReceivedEvent` и `OrderFullyPaidEvent` через AMQP exchange `splitpay_events`, политика повторных попыток (exponential backoff) и Dead Letter Queue (`splitpay_dlq`).
 - **Два интерфейса взаимодействия:**
   - **REST API** (тонкие контроллеры, DTO с `#[MapRequestPayload]`, Symfony Validator/Serializer).
-  - **Серверный веб-интерфейс (Twig + Bootstrap 5.3)** на русском/украинском языке (интерфейс на украинском согласно политике `AGENTS.md`): дашборд заказов, карточка заказа с оплатой и историей транзакций, интерактивный запуск бенчмарков.
-- **Инструментарий бенчмаркинга:** CLI-команда `app:benchmark:run`, параллельный HTTP-раннер на `curl_multi` (`BenchmarkRunner`) и независимый SQL-аудитор согласованности БД (`ConsistencyAuditor`).
-- **Автоматическое тестирование:** **62 теста (207 assertions)** — все проходят (`OK`).
+  - **Серверный веб-интерфейс (Twig + Bootstrap 5.3)** на украинском языке (согласно политике `AGENTS.md`): дашборд заказов, карточка заказа с оплатой, историей транзакций и мультипользовательским конкурентным симулятором (`POST /web/orders/{id}/simulate-concurrent`), а также интерактивный запуск одно- и мультипользовательских бенчмарков (`users_count`).
+- **Инструментарий бенчмаркинга и мультипользовательских симуляций:** CLI-команда `app:benchmark:run` (включая опцию `--users`), параллельный HTTP-раннер на `curl_multi` (`BenchmarkRunner::runConcurrentPayments()` с DTO `PaymentIntent`, `ConcurrentPaymentAttemptResult`, `MultiUserSimulationResult`) и независимый SQL-аудитор согласованности БД (`ConsistencyAuditor`).
+- **Автоматическое тестирование:** **79 тестов (305 assertions)** — все проходят (`OK`).
 
 ---
 
@@ -67,7 +67,7 @@ splitpay/
 │   │   ├── twig.yaml                          # strict_variables: true в test
 │   │   └── validator.yaml
 │   ├── routes.yaml                            # Импорт атрибутов #[Route] из src/Controller/
-│   └── services.yaml                          # autowire/autoconfigure для App\
+│   └── services.yaml                          # autowire/autoconfigure для App\; public: true для BenchmarkRunner в test
 ├── docker/nginx/default.conf
 ├── migrations/
 │   ├── Version20260918162837.php
@@ -77,18 +77,21 @@ splitpay/
 │   ├── Benchmark/
 │   │   ├── AuditResult.php                    # DTO результата проверки целостности БД
 │   │   ├── BenchmarkResult.php                # DTO метрик (RPS, P50/P95/P99, 201/409/422/5xx)
-│   │   ├── BenchmarkRunner.php                # Многопоточный HTTP-раннер через curl_multi
-│   │   └── ConsistencyAuditor.php             # Прямой SQL-аудит orders vs SUM(payments)
+│   │   ├── BenchmarkRunner.php                # Многопоточный HTTP-раннер через curl_multi (run + runConcurrentPayments)
+│   │   ├── ConcurrentPaymentAttemptResult.php # DTO результата отдельной конкурентной попытки платежа
+│   │   ├── ConsistencyAuditor.php             # Прямой SQL-аудит orders vs SUM(payments)
+│   │   ├── MultiUserSimulationResult.php      # Агрегированный DTO мультипользовательской симуляции и списка attempts
+│   │   └── PaymentIntent.php                  # Валидируемый DTO намерения платежа (userId, amountCents, method, key, label)
 │   ├── Command/
-│   │   └── BenchmarkRunCommand.php            # CLI app:benchmark:run
+│   │   └── BenchmarkRunCommand.php            # CLI app:benchmark:run (поддержка --users для round-robin)
 │   ├── Controller/
 │   │   ├── OrderController.php                # API: POST /orders, GET /orders/{id}
 │   │   ├── PaymentController.php              # API: POST /payments/{orderId}, GET /payments/{id}
 │   │   ├── UserController.php                 # API: POST /users, GET /users/{id}
 │   │   └── Web/
 │   │       ├── DashboardController.php        # Web: GET /, GET /dashboard
-│   │       ├── WebBenchmarkController.php     # Web: GET /benchmark, POST /benchmark/run
-│   │       ├── WebOrderController.php         # Web: POST /web/orders, GET /web/orders/{id}, POST /web/orders/{id}/pay
+│   │       ├── WebBenchmarkController.php     # Web: GET /benchmark, POST /benchmark/run (с параметром users_count)
+│   │       ├── WebOrderController.php         # Web: POST /web/orders, GET /web/orders/{id}, POST /web/orders/{id}/pay, POST /web/orders/{id}/simulate-concurrent
 │   │       └── WebUserController.php          # Web: POST /web/users
 │   ├── DTO/
 │   │   ├── Order/CreateOrderRequest.php
@@ -136,10 +139,10 @@ splitpay/
 │   └── Kernel.php
 ├── templates/
 │   ├── base.html.twig                         # Bootstrap 5.3 + навигация + модалки создания
-│   ├── benchmark/index.html.twig              # Живой запуск и визуализация метрик стратегий
+│   ├── benchmark/index.html.twig              # Живой запуск (вкл. users_count) и визуализация метрик стратегий
 │   ├── dashboard/index.html.twig              # Сводная статистика и список заказов
-│   └── order/show.html.twig                   # Детали заказа, прогресс-бар, форма оплаты, платежи
-└── tests/                                     # 62 теста (207 assertions)
+│   └── order/show.html.twig                   # Детали заказа, форма оплаты, платежи и мультипользовательский симулятор
+└── tests/                                     # 79 тестов (305 assertions)
 ```
 
 ---
@@ -264,10 +267,19 @@ HTTP POST /payments/{orderId}  (или POST /web/orders/{id}/pay)
 | `GET` | `/` и `/dashboard` | `web_dashboard` / `web_dashboard_alias` | `DashboardController::index` | Дашборд со сводной статистикой и таблицей заказов |
 | `POST` | `/web/users` | `web_user_create` | `WebUserController::create` | Создание пользователя через модальную форму |
 | `POST` | `/web/orders` | `web_order_create` | `WebOrderController::create` | Создание заказа через модальную форму |
-| `GET` | `/web/orders/{id}` | `web_order_show` | `WebOrderController::show` | Карточка заказа, прогресс, история платежей, форма оплаты |
+| `GET` | `/web/orders/{id}` | `web_order_show` | `WebOrderController::show` | Карточка заказа, прогресс, история платежей, форма оплаты, симулятор и результаты из сессии |
 | `POST` | `/web/orders/{id}/pay` | `web_order_pay` | `WebOrderController::pay` | Проведение платежа из UI с выбором стратегии и flash-статусом |
+| `POST` | `/web/orders/{id}/simulate-concurrent` | `web_order_simulate_concurrent` | `WebOrderController::simulateConcurrent` | Конкурентная мультипользовательская симуляция через `BenchmarkRunner::runConcurrentPayments()` (PRG) |
 | `GET` | `/benchmark` | `web_benchmark` | `WebBenchmarkController::index` | Страница интерактивного бенчмаркинга |
-| `POST` | `/benchmark/run` | `web_benchmark_run` | `WebBenchmarkController::run` | Живой запуск `BenchmarkRunner` и визуализация P50/P95/P99/RPS и аудита |
+| `POST` | `/benchmark/run` | `web_benchmark_run` | `WebBenchmarkController::run` | Живой запуск `BenchmarkRunner` (поддержка `users_count` 1–50) и визуализация P50/P95/P99/RPS и аудита |
+
+### Движок конкурентных мультипользовательских симуляций (`src/Benchmark/`)
+
+- **`PaymentIntent`** (`final readonly class`): инкапсулирует намерение платежа (`userId`, `amountCents`, `paymentMethod` `card|cash`, опциональные `idempotencyKey` и `participantLabel`) с валидацией инвариантов в конструкторе.
+- **`ConcurrentPaymentAttemptResult`** (`final readonly class`): фиксирует исход каждого параллельного запроса (`index`, `userId`, `participantLabel`, `amountCents`, `paymentMethod`, `idempotencyKey`, `httpStatus`, `latencyMs`, `paymentId`, `errorMessage`).
+- **`MultiUserSimulationResult`** (`final readonly class`): объединяет `strategy`, `orderId`, `distinctUserCount`, агрегированный `BenchmarkResult` и `list<ConcurrentPaymentAttemptResult> $attempts`.
+- **`BenchmarkRunner::runConcurrentPayments(string $strategy, int $orderId, array $intents, int $concurrency)`**: выполняет батчи `curl_multi` против `POST /payments/{orderId}` (с fallback-ретраем при 100% транспортном сбое батча), безопасно читает тела ответов через `curl_multi_getcontent()`, собирает перцентили латентности и счётчики кодов `201/409/422/5xx`, вызывает `ConsistencyAuditor::audit($orderId)` и возвращает `MultiUserSimulationResult`. Существующий `BenchmarkRunner::run()` делегирует в `runConcurrentPayments()`.
+- **CLI `--users` в `BenchmarkRunCommand`:** при `--users > 1` создаёт указанное количество пользователей и распределяет `--requests` по схеме round-robin с чередованием `card`/`cash`, добавляя колонку `Users` в вывод `table` и `markdown`.
 
 ---
 
@@ -288,17 +300,17 @@ HTTP POST /payments/{orderId}  (или POST /web/orders/{id}/pay)
 ## 9. Тестирование и валидация
 
 Статус по итогам прогона `docker compose exec php php bin/phpunit`:
-- **Всего тестов:** **62** (`207 assertions`) — **100% проходят** (присутствуют 2 минорных предупреждения PHPUnit 13 по использованию `createMock()` вместо `createStub()`).
+- **Всего тестов:** **79** (`305 assertions`) — **100% проходят** (присутствуют 2 минорных предупреждения PHPUnit 13 в старых тестах по использованию `createMock()` без `expects()`).
 - **Валидация Symfony:** `lint:container`, `lint:twig templates/`, `lint:yaml config/` и `doctrine:schema:validate` — **все [OK]**.
 
 Разбивка тестового набора (`tests/`):
-- `tests/Controller/`: `UserControllerTest`, `OrderControllerTest`, `PaymentControllerTest` (JSON API), `Web/WebInterfaceTest` (Twig UI, редиректы, flash-сообщения, конфликты и переплаты).
+- `tests/Controller/`: `UserControllerTest`, `OrderControllerTest`, `PaymentControllerTest` (JSON API), `Web/WebInterfaceTest` (Twig UI, редиректы, flash-сообщения, конфликты, переплаты, мультипользовательский симулятор `POST /web/orders/{id}/simulate-concurrent` и `users_count` на `/benchmark/run` с подменой `BenchmarkRunner` в `test`-контейнере).
 - `tests/Payment/Strategy/StrategyIntegrationTest.php`: 22 теста всех 5 стратегий против реальной БД `splitpay_test` (включая проверку refresh устаревшего состояния для `mutex`).
-- `tests/Payment/ConcurrencyStressTest.php`: 5 параллельных HTTP-стресс-тестов через Nginx → PHP-FPM (`baseline` демонстрирует race condition, а `pessimistic`, `optimistic`, `mutex` и `atomic` строго удерживают инварианты I1–I5).
+- `tests/Payment/ConcurrencyStressTest.php`: 7 параллельных HTTP-стресс-тестов через Nginx → PHP-FPM (`baseline` и мультипользовательский `baseline` демонстрируют race condition, а `pessimistic`, `optimistic`, `mutex`, `atomic` и мультипользовательский `atomic` с 4 пользователями и `card`/`cash` строго удерживают инварианты I1–I5).
 - `tests/Payment/Idempotency/RedisIdempotencyFilterTest.php`: Тесты атомарного захвата, конфликта, освобождения и 24h-фиксации ключей в реальном Redis.
 - `tests/Service/`: `PaymentServiceTest`, `PaymentPostProcessingTest` (проверка Redis-фильтра, обработки ретраев `OptimisticLockStrategy` и диспатча `PaymentReceivedEvent` / `OrderFullyPaidEvent`).
 - `tests/MessageHandler/` и `tests/Messenger/`: `SendPaymentReceiptHandlerTest`, `SendOrderPaidWebhookHandlerTest`, `MessengerFailureAndRetryTest`.
-- `tests/Benchmark/` и `tests/Command/`: `ConsistencyAuditorTest`, `BenchmarkRunCommandTest`.
+- `tests/Benchmark/` и `tests/Command/`: `ConsistencyAuditorTest`, `BenchmarkRunnerTest` (валидация `PaymentIntent` и `BenchmarkRunner::runConcurrentPayments()`), `BenchmarkRunCommandTest` (включая `--users` round-robin и валидацию `--users 0`).
 
 ---
 
@@ -337,9 +349,9 @@ docker compose exec php php bin/console lint:twig templates/
 docker compose exec php php bin/console lint:yaml config/
 docker compose exec php php bin/console doctrine:schema:validate
 
-# Запустить все 62 теста
+# Запустить все 79 тестов
 docker compose exec php php bin/phpunit
 
-# Запустить бенчмарк всех 5 стратегий из CLI
-docker compose exec php php bin/console app:benchmark:run --strategy all --requests 50 --concurrency 10
+# Запустить мультипользовательский бенчмарк всех 5 стратегий из CLI
+docker compose exec php php bin/console app:benchmark:run --strategy all --users 4 --requests 40 --concurrency 10
 ```

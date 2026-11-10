@@ -13,9 +13,10 @@
 {# Якщо є результати живого запуску #}
 {% if benchmarkResult is not null %}
     <div class="card border-primary shadow-sm mb-5">
-        <div class="card-header bg-primary text-white py-3 d-flex justify-content-between align-items-center">
+        <div class="card-header bg-primary text-white py-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
             <span class="h5 mb-0 fw-bold">
                 <i class="bi bi-graph-up-arrow me-2"></i>Результати живого тесту: <code>{{ benchmarkResult.strategy }}</code>
+                <span class="badge bg-light text-primary ms-2">{{ usersCount }} учасник(ів)</span>
             </span>
             {% if testOrder %}
                 <a href="{{ path('web_order_show', {id: testOrder.id}) }}" class="btn btn-light btn-sm fw-semibold" target="_blank">
@@ -172,25 +173,31 @@
                     </select>
                 </div>
 
-                <div class="col-md-2">
+                <div class="col-md-4">
+                    <label for="usersCount" class="form-label fw-semibold">Учасники (Users)</label>
+                    <input type="number" class="form-control mono" id="usersCount" name="users_count" value="{{ lastParams.usersCount ?? 1 }}" min="1" max="50" required>
+                    <div class="form-text small">1–50 платників (round-robin)</div>
+                </div>
+
+                <div class="col-md-4">
                     <label for="totalRequests" class="form-label fw-semibold">Всього запитів</label>
                     <input type="number" class="form-control mono" id="totalRequests" name="total_requests" value="{{ lastParams.totalRequests ?? 100 }}" min="10" max="300" required>
                     <div class="form-text small">10–300 req</div>
                 </div>
 
-                <div class="col-md-2">
+                <div class="col-md-4">
                     <label for="concurrency" class="form-label fw-semibold">Паралельність (Workers)</label>
                     <input type="number" class="form-control mono" id="concurrency" name="concurrency" value="{{ lastParams.concurrency ?? 10 }}" min="1" max="30" required>
                     <div class="form-text small">1–30 потоків</div>
                 </div>
 
-                <div class="col-md-2">
+                <div class="col-md-4">
                     <label for="paymentAmount" class="form-label fw-semibold">Сума платежу ($)</label>
                     <input type="number" step="1" class="form-control mono" id="paymentAmount" name="payment_amount_dollars" value="{{ lastParams.paymentAmountDollars ?? 10.00 }}" min="1" required>
                     <div class="form-text small">Розмір спліту</div>
                 </div>
 
-                <div class="col-md-2">
+                <div class="col-md-4">
                     <label for="orderPrice" class="form-label fw-semibold">Сума замовлення ($)</label>
                     <input type="number" step="1" class="form-control mono" id="orderPrice" name="order_price_dollars" value="{{ lastParams.orderPriceDollars ?? 100.00 }}" min="10" required>
                     <div class="form-text small">Ліміт балансу</div>
@@ -266,7 +273,7 @@
                         <td class="pe-3 text-muted">Низька конкурентність</td>
                     </tr>
                     <tr>
-                        <td class="ps-3 fw-bold mono">4. symfony_lock (mutex)</td>
+                        <td class="ps-3 fw-bold mono">4. mutex (symfony/lock)</td>
                         <td>М'ютекс рівня застосунку (<code>LockFactory</code>)</td>
                         <td class="text-center text-success fw-bold"><i class="bi bi-check-circle-fill"></i> Збережено</td>
                         <td class="text-center text-success fw-bold"><i class="bi bi-check-circle-fill"></i> Збережено</td>

@@ -6,6 +6,7 @@ namespace App\Tests\Payment;
 
 use App\Benchmark\BenchmarkRunner;
 use App\Benchmark\ConsistencyAuditor;
+use App\Benchmark\PaymentIntent;
 use App\Enum\OrderStatus;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
@@ -26,9 +27,6 @@ final class ConcurrencyStressTest extends KernelTestCase
     protected function setUp(): void
     {
         self::bootKernel();
-        $container = static::getContainer();
-
-        $this->runner = $container->get(BenchmarkRunner::class);
 
         // Nginx runs against the dev database ('splitpay'). We connect directly
         // to that database to persist test scenarios and audit post-concurrency state.
@@ -41,6 +39,34 @@ final class ConcurrencyStressTest extends KernelTestCase
             'dbname'   => 'splitpay',
         ]);
         $this->auditor = new ConsistencyAuditor($this->devDb);
+        $this->runner = new BenchmarkRunner($this->auditor);
+    }
+
+    /** @return array{int, list<int>} */
+    private function createMultiUserScenario(int $fullPriceCents, int $userCount): array
+    {
+        $userIds = [];
+        for ($u = 0; $u < $userCount; ++$u) {
+            $this->devDb->executeStatement(
+                'INSERT INTO users (name, created_at) VALUES (:name, NOW())',
+                ['name' => sprintf('Stress Multi User #%d %s', $u + 1, bin2hex(random_bytes(4)))],
+            );
+            $userIds[] = (int) $this->devDb->lastInsertId();
+        }
+
+        $this->devDb->executeStatement(
+            'INSERT INTO orders (name, full_price_cents, paid_price_cents, status, version, created_at, updated_at, user_id)
+             VALUES (:name, :fullPrice, 0, :status, 1, NOW(), NOW(), :userId)',
+            [
+                'name' => 'Stress Multi Order ' . bin2hex(random_bytes(5)),
+                'fullPrice' => $fullPriceCents,
+                'status' => OrderStatus::Open->value,
+                'userId' => $userIds[0],
+            ],
+        );
+        $orderId = (int) $this->devDb->lastInsertId();
+
+        return [$orderId, $userIds];
     }
 
     private function createScenario(int $fullPriceCents): array
@@ -191,5 +217,64 @@ final class ConcurrencyStressTest extends KernelTestCase
         self::assertSame(3, $audit->paymentCount);
         self::assertSame(3, $result->status201Count);
         self::assertSame(0, $result->status5xxCount);
+    }
+
+    public function testMultiUserConcurrentPaymentsStrictlyEnforceInvariantsUnderAtomic(): void
+    {
+        [$orderId, $userIds] = $this->createMultiUserScenario(10000, 4);
+
+        $intents = [];
+        for ($i = 0; $i < 8; ++$i) {
+            $intents[] = new PaymentIntent(
+                userId: $userIds[$i % 4],
+                amountCents: 2500,
+                paymentMethod: $i % 2 === 0 ? 'card' : 'cash',
+            );
+        }
+
+        $result = $this->runner->runConcurrentPayments('atomic', $orderId, $intents, 8);
+        $audit = $this->auditor->audit($orderId);
+
+        self::assertFalse($audit->isOverpaid, 'Invariant I1 violated: multi-user order was overpaid.');
+        self::assertTrue($audit->isConsistent, 'Invariant I2 violated: paid price diverged from actual payment sum.');
+        self::assertSame(10000, $audit->orderPaidPriceCents);
+        self::assertSame(10000, $audit->actualPaymentSumCents);
+        self::assertSame(4, $audit->paymentCount);
+        self::assertSame(4, $result->benchmark->status201Count);
+        self::assertSame(0, $result->benchmark->status5xxCount);
+
+        $distinctPayers = (int) $this->devDb->fetchOne(
+            'SELECT COUNT(DISTINCT user_id) FROM payments WHERE order_id = :orderId',
+            ['orderId' => $orderId],
+        );
+        self::assertGreaterThanOrEqual(2, $distinctPayers);
+    }
+
+    public function testMultiUserBaselineExposesRaceCondition(): void
+    {
+        [$orderId, $userIds] = $this->createMultiUserScenario(3000, 4);
+
+        $intents = [];
+        for ($i = 0; $i < 12; ++$i) {
+            $intents[] = new PaymentIntent(
+                userId: $userIds[$i % 4],
+                amountCents: 1000,
+                paymentMethod: $i % 2 === 0 ? 'card' : 'cash',
+            );
+        }
+
+        $this->runner->runConcurrentPayments('baseline', $orderId, $intents, 6);
+        $audit = $this->auditor->audit($orderId);
+
+        self::assertTrue(
+            $audit->isOverpaid || !$audit->isConsistent,
+            sprintf(
+                'Expected multi-user baseline to expose a race condition, but got paid=%d, actual=%d, overpaid=%s, consistent=%s',
+                $audit->orderPaidPriceCents,
+                $audit->actualPaymentSumCents,
+                $audit->isOverpaid ? 'YES' : 'NO',
+                $audit->isConsistent ? 'YES' : 'NO',
+            ),
+        );
     }
 }
