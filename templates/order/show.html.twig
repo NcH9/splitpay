@@ -1,0 +1,726 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Замовлення #{{ order.id }}: {{ order.name }} — SplitPay{% endblock %}
+
+{% block body %}
+<div class="mb-3">
+    <a href="{{ path('web_dashboard') }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left me-1"></i> Назад до списку замовлень
+    </a>
+</div>
+
+{% set percent = (order.fullPriceCents > 0) ? ((order.paidPriceCents / order.fullPriceCents) * 100)|round : 0 %}
+{% set remainingDollars = order.remainingCents / 100 %}
+
+<div class="row g-4 mb-4">
+    {# Ліва колонка: Інформація про замовлення та історія платежів #}
+    <div class="col-lg-7">
+        {# Картка замовлення #}
+        <div class="card shadow-sm mb-4">
+            <div class="card-header py-3 d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="mono text-muted small me-2">#{{ order.id }}</span>
+                    <span class="h5 mb-0 fw-bold">{{ order.name }}</span>
+                </div>
+                <div>
+                    {% if order.status.value == 'paid' %}
+                        <span class="badge bg-success-subtle text-success border border-success-subtle px-3 py-2 fs-6">
+                            <i class="bi bi-check-circle-fill me-1"></i> ОПЛАЧЕНО (PAID)
+                        </span>
+                    {% else %}
+                        <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle px-3 py-2 fs-6">
+                            <i class="bi bi-hourglass-split me-1"></i> ВІДКРИТО (OPEN)
+                        </span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row g-3 mb-3">
+                    <div class="col-sm-4 text-center border-end">
+                        <div class="text-muted small">Повна сума</div>
+                        <div class="h4 fw-bold mb-0 mono">${{ (order.fullPriceCents / 100)|number_format(2, '.', ' ') }}</div>
+                    </div>
+                    <div class="col-sm-4 text-center border-end">
+                        <div class="text-muted small">Сплачено</div>
+                        <div class="h4 fw-bold mb-0 mono text-success">${{ (order.paidPriceCents / 100)|number_format(2, '.', ' ') }}</div>
+                    </div>
+                    <div class="col-sm-4 text-center">
+                        <div class="text-muted small">Залишок до оплати</div>
+                        <div class="h4 fw-bold mb-0 mono {% if order.remainingCents > 0 %}text-primary{% else %}text-muted{% endif %}">
+                            ${{ (order.remainingCents / 100)|number_format(2, '.', ' ') }}
+                        </div>
+                    </div>
+                </div>
+
+                {# Прогрес бар #}
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between align-items-center small mb-1">
+                        <span class="text-muted">Прогрес спліту</span>
+                        <span class="fw-bold mono">{{ percent }}%</span>
+                    </div>
+                    <div class="progress" style="height: 12px;">
+                        <div class="progress-bar {% if order.status.value == 'paid' %}bg-success{% else %}bg-primary{% endif %}" 
+                             role="progressbar" 
+                             style="width: {{ percent > 100 ? 100 : percent }}%;" 
+                             aria-valuenow="{{ percent }}" 
+                             aria-valuemin="0" 
+                             aria-valuemax="100">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap justify-content-between text-muted small pt-2 border-top">
+                    <div>
+                        <i class="bi bi-person me-1"></i> Власник: <strong>{{ order.user ? order.user.name : 'Unknown' }}</strong>
+                    </div>
+                    <div>
+                        <span class="mono">версія ORM: {{ order.version }}</span> &bull; 
+                        створено {{ order.createdAt|date('d.m.Y H:i') }}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {# Список здійснених платежів #}
+        <div class="card shadow-sm">
+            <div class="card-header py-3 d-flex justify-content-between align-items-center">
+                <span class="h6 mb-0 fw-semibold"><i class="bi bi-clock-history me-2 text-primary"></i>Історія платежів</span>
+                <span class="badge bg-secondary-subtle text-dark border">{{ payments|length }} транзакцій</span>
+            </div>
+            <div class="card-body p-0">
+                {% if payments is empty %}
+                    <div class="text-center py-4 text-muted">
+                        <i class="bi bi-credit-card-2-front display-6 d-block mb-2 text-black-50"></i>
+                        За цим замовленням поки немає здійснених платежів.
+                    </div>
+                {% else %}
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th class="ps-3">ID</th>
+                                    <th>Платник</th>
+                                    <th>Сума</th>
+                                    <th>Метод</th>
+                                    <th>Idempotency Key</th>
+                                    <th class="text-end pe-3">Дата</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for p in payments %}
+                                    <tr>
+                                        <td class="ps-3 mono fw-semibold">#{{ p.id }}</td>
+                                        <td>
+                                            <span class="badge bg-light text-dark border">
+                                                <i class="bi bi-person me-1"></i>{{ p.user ? p.user.name : 'Unknown' }}
+                                            </span>
+                                        </td>
+                                        <td class="mono fw-bold text-success">+${{ (p.amountCents / 100)|number_format(2, '.', ' ') }}</td>
+                                        <td>
+                                            {% if p.paymentMethod.value == 'card' %}
+                                                <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle">
+                                                    <i class="bi bi-credit-card me-1"></i>Card
+                                                </span>
+                                            {% else %}
+                                                <span class="badge bg-secondary-subtle text-dark border">
+                                                    <i class="bi bi-cash me-1"></i>Cash
+                                                </span>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            <span class="mono text-muted small" title="{{ p.idempotencyKey }}">
+                                                {{ p.idempotencyKey|length > 20 ? (p.idempotencyKey|slice(0, 18) ~ '…') : p.idempotencyKey }}
+                                            </span>
+                                        </td>
+                                        <td class="text-end pe-3 small text-muted">
+                                            {{ p.createdAt|date('d.m.Y H:i:s') }}
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    {# Права колонка: Форма внесення нового платежу #}
+    <div class="col-lg-5">
+        <div class="card shadow-sm sticky-top" style="top: 80px;">
+            <div class="card-header py-3 bg-primary text-white">
+                <span class="h6 mb-0 fw-bold"><i class="bi bi-plus-circle me-2"></i>Внести спліт-платіж</span>
+            </div>
+            <div class="card-body">
+                {% if order.status.value == 'paid' %}
+                    <div class="alert alert-success d-flex align-items-center mb-0" role="alert">
+                        <i class="bi bi-check-circle-fill fs-3 me-3 text-success"></i>
+                        <div>
+                            <strong>Замовлення повністю оплачене!</strong>
+                            <div class="small">Усі частки за сплітом успішно внесено. Прийом нових оплат закрито.</div>
+                        </div>
+                    </div>
+                {% else %}
+                    <form action="{{ path('web_order_pay', {id: order.id}) }}" method="POST" id="paymentForm">
+                        {# Сума платежу #}
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <label for="amountDollars" class="form-label mb-0 fw-semibold">Сума платежу ($)</label>
+                                <span class="small text-muted">Макс: ${{ (order.remainingCents / 100)|number_format(2, '.', '') }}</span>
+                            </div>
+                            <div class="input-group">
+                                <span class="input-group-text">$</span>
+                                <input type="number" 
+                                       step="0.01" 
+                                       min="0.01" 
+                                       class="form-control mono fs-5 fw-bold" 
+                                       id="amountDollars" 
+                                       name="amount_dollars" 
+                                       value="{{ (order.remainingCents / 100) > 10 ? 10.00 : (order.remainingCents / 100)|number_format(2, '.', '') }}" 
+                                       required>
+                            </div>
+                            <div class="d-flex gap-1 mt-2">
+                                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="document.getElementById('amountDollars').value = '10.00'">$10</button>
+                                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="document.getElementById('amountDollars').value = '25.00'">$25</button>
+                                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="document.getElementById('amountDollars').value = '50.00'">$50</button>
+                                <button type="button" class="btn btn-outline-primary btn-sm ms-auto" onclick="document.getElementById('amountDollars').value = '{{ (order.remainingCents / 100)|number_format(2, '.', '') }}'">Увесь залишок</button>
+                            </div>
+                        </div>
+
+                        {# Вибір користувача #}
+                        <div class="mb-3">
+                            <label for="userId" class="form-label fw-semibold">Платник (Користувач)</label>
+                            {% if users is empty %}
+                                <div class="alert alert-warning small py-2 mb-2">
+                                    Немає користувачів. Спочатку створіть користувача через верхнє меню.
+                                </div>
+                            {% endif %}
+                            <select class="form-select" id="userId" name="user_id" required>
+                                {% for u in users %}
+                                    <option value="{{ u.id }}">#{{ u.id }} &bull; {{ u.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+
+                        {# Метод оплати #}
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Спосіб оплати</label>
+                            <div class="d-flex gap-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="payment_method" id="methodCard" value="card" checked>
+                                    <label class="form-check-label" for="methodCard">
+                                        <i class="bi bi-credit-card me-1 text-primary"></i> Банківська картка
+                                    </label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="payment_method" id="methodCash" value="cash">
+                                    <label class="form-check-label" for="methodCash">
+                                        <i class="bi bi-cash me-1 text-success"></i> Готівка
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        {# Стратегія конкурентності #}
+                        <div class="mb-3">
+                            <label for="strategySelect" class="form-label fw-semibold">
+                                Стратегія синхронізації
+                                <i class="bi bi-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="Визначає механізм контролю конкурентності під час паралельних запитів"></i>
+                            </label>
+                            <select class="form-select font-monospace small" id="strategySelect" name="strategy" required>
+                                {% for key, label in strategies %}
+                                    <option value="{{ key }}" {% if key == 'atomic' %}selected{% endif %}>
+                                        {{ label }}
+                                    </option>
+                                {% endfor %}
+                            </select>
+                            <div class="form-text small">
+                                <strong>Atomic</strong> — атомарний SQL UPDATE WHERE; <strong>Pessimistic</strong> — SELECT FOR UPDATE; <strong>Baseline</strong> — демонстрація оверпейменту під час конкурентності.
+                            </div>
+                        </div>
+
+                        {# Idempotency Key #}
+                        <div class="mb-4">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <label for="idempotencyKey" class="form-label mb-0 fw-semibold">
+                                    Idempotency Key (I5)
+                                </label>
+                                <button type="button" class="btn btn-link btn-sm p-0 text-decoration-none" onclick="generateNewKey()">
+                                    <i class="bi bi-arrow-repeat me-1"></i> Згенерувати новий
+                                </button>
+                            </div>
+                            <input type="text" class="form-control mono small text-muted" id="idempotencyKey" name="idempotency_key" value="{{ defaultIdempotencyKey }}" required>
+                            <div class="form-text small">
+                                Захист від дублювання. Якщо надіслати повторно той самий ключ — повернеться помилка <code>409 Conflict</code>.
+                            </div>
+                        </div>
+
+                        {# Кнопка відправки #}
+                        <button type="submit" class="btn btn-primary w-100 py-2 fw-semibold" {% if users is empty %}disabled{% endif %}>
+                            <i class="bi bi-check2-circle me-1"></i> Внести платіж
+                        </button>
+                    </form>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% set simulatorUsers = [] %}
+{% for u in users %}
+    {% set simulatorUsers = simulatorUsers|merge([{id: u.id, name: u.name}]) %}
+{% endfor %}
+
+<div class="card shadow-sm mb-4"
+     id="multiUserSimulatorCard"
+     data-users="{{ simulatorUsers|json_encode|e('html_attr') }}"
+     data-remaining-cents="{{ order.remainingCents }}">
+    <div class="card-header py-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div>
+            <span class="h5 mb-0 fw-bold">
+                <i class="bi bi-people-fill text-primary me-2"></i>Симулятор конкурентної мультикористувацької оплати
+            </span>
+        </div>
+        {% if order.status.value == 'paid' %}
+            <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle px-3 py-2">
+                <i class="bi bi-info-circle me-1"></i>Замовлення вже закрите (PAID) — запуск продемонструє <code>409 Conflict</code> (<code>OrderNotOpenException</code>)
+            </span>
+        {% endif %}
+    </div>
+
+    <div class="card-body">
+        {% if simulationResult is not null %}
+            {% set simAudit = simulationResult.audit %}
+            <div id="simulationResultsPanel" class="border rounded-3 p-3 mb-4 bg-light">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                    <h6 class="fw-bold mb-0">
+                        <i class="bi bi-activity text-primary me-2"></i>Результати останньої симуляції
+                        <span class="badge bg-dark ms-2 badge-strategy">{{ simulationResult.strategy }}</span>
+                    </h6>
+                    <span class="small text-muted mono">
+                        {{ simulationResult.totalRequests }} запитів &bull; паралельність {{ simulationResult.concurrency }} &bull; {{ simulationResult.totalTimeSeconds|number_format(3) }} с
+                    </span>
+                </div>
+
+                {# Основні метрики симуляції #}
+                <div class="row g-2 text-center mb-3">
+                    <div class="col-6 col-md-3 col-lg">
+                        <div class="p-2 bg-white rounded border">
+                            <div class="small text-muted">Стратегія</div>
+                            <div class="fw-bold mono">{{ simulationResult.strategy }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 col-lg">
+                        <div class="p-2 bg-white rounded border">
+                            <div class="small text-muted">Учасників</div>
+                            <div class="fw-bold mono">{{ simulationResult.distinctUserCount }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 col-lg">
+                        <div class="p-2 bg-white rounded border">
+                            <div class="small text-muted">201 Created</div>
+                            <div class="fw-bold mono text-success">{{ simulationResult.status201Count }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 col-lg">
+                        <div class="p-2 bg-white rounded border">
+                            <div class="small text-muted">409 Conflict</div>
+                            <div class="fw-bold mono text-warning-emphasis">{{ simulationResult.status409Count }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 col-lg">
+                        <div class="p-2 bg-white rounded border">
+                            <div class="small text-muted">422 Unprocessable</div>
+                            <div class="fw-bold mono text-info-emphasis">{{ simulationResult.status422Count }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 col-lg">
+                        <div class="p-2 bg-white rounded border">
+                            <div class="small text-muted">5xx</div>
+                            <div class="fw-bold mono {% if simulationResult.status5xxCount > 0 %}text-danger{% else %}text-muted{% endif %}">{{ simulationResult.status5xxCount }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 col-lg">
+                        <div class="p-2 bg-white rounded border">
+                            <div class="small text-muted">P50 / P95 мс</div>
+                            <div class="fw-bold mono">{{ simulationResult.latencyP50Ms|number_format(1) }} / {{ simulationResult.latencyP95Ms|number_format(1) }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 col-lg">
+                        <div class="p-2 bg-white rounded border">
+                            <div class="small text-muted">RPS</div>
+                            <div class="fw-bold mono text-primary">{{ simulationResult.requestsPerSecond|number_format(1) }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                {# ConsistencyAuditor I1 & I2 #}
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <div class="d-flex justify-content-between align-items-center p-2 rounded border {% if not simAudit.isOverpaid %}bg-success-subtle border-success-subtle{% else %}bg-danger-subtle border-danger-subtle{% endif %}">
+                            <div class="small">
+                                <strong>I1 (No Overpayment):</strong>
+                                <span class="text-muted">Сплачено не більше повної суми</span>
+                            </div>
+                            {% if not simAudit.isOverpaid %}
+                                <span class="badge bg-success">ЗБЕРЕЖЕНО</span>
+                            {% else %}
+                                <span class="badge bg-danger">ПОРУШЕНО</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="d-flex justify-content-between align-items-center p-2 rounded border {% if simAudit.isConsistent %}bg-success-subtle border-success-subtle{% else %}bg-danger-subtle border-danger-subtle{% endif %}">
+                            <div class="small">
+                                <strong>I2 (Balance Integrity):</strong>
+                                <span class="text-muted">Кеш Order == SUM(Payment)</span>
+                            </div>
+                            {% if simAudit.isConsistent %}
+                                <span class="badge bg-success">ЗБЕРЕЖЕНО</span>
+                            {% else %}
+                                <span class="badge bg-danger">ПОРУШЕНО</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap gap-4 small mono bg-white border rounded p-2 mb-3">
+                    <div>Повна сума: <strong>${{ (simAudit.orderFullPriceCents / 100)|number_format(2) }}</strong> ({{ simAudit.orderFullPriceCents }} ¢)</div>
+                    <div>Баланс Order: <strong>${{ (simAudit.orderPaidPriceCents / 100)|number_format(2) }}</strong> ({{ simAudit.orderPaidPriceCents }} ¢)</div>
+                    <div>Сума платежів (DB): <strong>${{ (simAudit.actualPaymentSumCents / 100)|number_format(2) }}</strong> ({{ simAudit.actualPaymentSumCents }} ¢, {{ simAudit.paymentCount }} шт.)</div>
+                    <div class="{% if simAudit.discrepancyCents != 0 %}text-danger fw-bold{% else %}text-muted{% endif %}">
+                        Розбіжність: <strong>${{ (simAudit.discrepancyCents / 100)|number_format(2) }}</strong> ({{ simAudit.discrepancyCents }} ¢)
+                    </div>
+                </div>
+
+                {# Таблиця спроб #}
+                <div class="table-responsive bg-white rounded border">
+                    <table class="table table-sm table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th class="ps-3">#</th>
+                                <th>Учасник</th>
+                                <th>Сума</th>
+                                <th>Спосіб</th>
+                                <th>HTTP Статус</th>
+                                <th>Затримка (мс)</th>
+                                <th>Платіж / Помилка</th>
+                                <th class="pe-3">Idempotency Key</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for attempt in simulationResult.attempts %}
+                                <tr>
+                                    <td class="ps-3 mono">{{ attempt.index + 1 }}</td>
+                                    <td>
+                                        <span class="fw-semibold">{{ attempt.participantLabel ?? ('Користувач #' ~ attempt.userId) }}</span>
+                                        <span class="text-muted small mono">(#{{ attempt.userId }})</span>
+                                    </td>
+                                    <td class="mono">${{ (attempt.amountCents / 100)|number_format(2) }}</td>
+                                    <td>
+                                        <span class="badge bg-secondary-subtle text-dark border">{{ attempt.paymentMethod }}</span>
+                                    </td>
+                                    <td>
+                                        {% if attempt.httpStatus == 201 %}
+                                            <span class="badge bg-success">201 Created</span>
+                                        {% elseif attempt.httpStatus == 409 %}
+                                            <span class="badge bg-warning text-dark">409 Conflict</span>
+                                        {% elseif attempt.httpStatus == 422 %}
+                                            <span class="badge bg-info text-dark">422 Unprocessable</span>
+                                        {% else %}
+                                            <span class="badge bg-danger">{{ attempt.httpStatus }}</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="mono">{{ attempt.latencyMs|number_format(1) }}</td>
+                                    <td class="small">
+                                        {% if attempt.paymentId is not null %}
+                                            <span class="text-success fw-semibold mono">Платіж #{{ attempt.paymentId }}</span>
+                                        {% else %}
+                                            <span class="text-danger">{{ attempt.errorMessage ?? 'Помилка виконання' }}</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="pe-3 mono small text-muted">{{ attempt.idempotencyKey }}</td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        {% endif %}
+
+        <div class="alert alert-light border small text-muted mb-3">
+            <i class="bi bi-hdd-network me-1 text-primary"></i>
+            Симулятор використовує серверний паралельний клієнт <code>curl_multi</code> замість браузерного <code>fetch()</code>, щоб оминути обмеження браузера на ~6 одночасних з’єднань і створити справжню високу конкурентність до PHP-FPM та PostgreSQL.
+        </div>
+
+        <form action="{{ path('web_order_simulate_concurrent', {id: order.id}) }}" method="POST" id="multiUserSimulatorForm">
+            <div class="row g-3 mb-3 align-items-end">
+                <div class="col-md-6">
+                    <label for="simStrategySelect" class="form-label fw-semibold">Стратегія синхронізації</label>
+                    <select class="form-select font-monospace small" id="simStrategySelect" name="strategy" required>
+                        {% for key, label in strategies %}
+                            <option value="{{ key }}" {% if key == 'atomic' %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label for="simConcurrency" class="form-label fw-semibold">Паралельність запитів</label>
+                    <input type="number" class="form-control mono" id="simConcurrency" name="concurrency" min="1" max="50" placeholder="Авто (за кількістю рядків)">
+                </div>
+                <div class="col-md-3 d-grid">
+                    <button type="submit" class="btn btn-primary fw-semibold" {% if users is empty %}disabled{% endif %}>
+                        <i class="bi bi-lightning-charge me-1"></i> Запустити одночасну оплату
+                    </button>
+                </div>
+            </div>
+
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <button type="button" class="btn btn-outline-primary btn-sm" id="addParticipantBtn" {% if users is empty %}disabled{% endif %}>
+                    + Додати учасника
+                </button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="presetEqualSplitBtn" {% if users is empty %}disabled{% endif %}>
+                    Розділити залишок порівну
+                </button>
+                <button type="button" class="btn btn-outline-danger btn-sm" id="presetConflictBtn" {% if users is empty %}disabled{% endif %}>
+                    Симулювати конфлікт (переплата)
+                </button>
+            </div>
+
+            {% if users is empty %}
+                <div class="alert alert-warning small">
+                    Для запуску симуляції спочатку створіть користувачів через кнопку «+ Користувач» у верхній панелі.
+                </div>
+            {% endif %}
+
+            <div class="table-responsive">
+                <table class="table table-bordered align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Учасник (Платник)</th>
+                            <th style="width: 180px;">Сума ($)</th>
+                            <th style="width: 170px;">Спосіб оплати</th>
+                            <th style="width: 70px;" class="text-center">Дія</th>
+                        </tr>
+                    </thead>
+                    <tbody id="participantRows">
+                        {% if users is not empty %}
+                            {% set defaultHalfDollars = order.remainingCents >= 200 ? ((order.remainingCents / 2) / 100)|number_format(2, '.', '') : '10.00' %}
+                            {% set secondUser = users|length >= 2 ? users[1] : users[0] %}
+                            {% for rowIndex, rowUser in [users[0], secondUser] %}
+                                <tr>
+                                    <td>
+                                        <select class="form-select form-select-sm" name="participants[{{ rowIndex }}][user_id]" required>
+                                            {% for u in users %}
+                                                <option value="{{ u.id }}" {% if u.id == rowUser.id %}selected{% endif %}>#{{ u.id }} &bull; {{ u.name }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </td>
+                                    <td>
+                                        <input type="number" step="0.01" min="0.01" class="form-control form-control-sm mono" name="participants[{{ rowIndex }}][amount_dollars]" value="{{ defaultHalfDollars }}" required>
+                                    </td>
+                                    <td>
+                                        <select class="form-select form-select-sm" name="participants[{{ rowIndex }}][payment_method]" required>
+                                            <option value="card" {% if rowIndex == 0 %}selected{% endif %}>Банківська картка (card)</option>
+                                            <option value="cash" {% if rowIndex == 1 %}selected{% endif %}>Готівка (cash)</option>
+                                        </select>
+                                    </td>
+                                    <td class="text-center">
+                                        <button type="button" class="btn btn-outline-danger btn-sm remove-participant-btn" title="Видалити учасника" aria-label="Видалити учасника">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block javascripts %}
+<script>
+    function generateNewKey() {
+        const randomHex = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+        const keyInput = document.getElementById('idempotencyKey');
+        if (keyInput) {
+            keyInput.value = 'splitpay-' + randomHex;
+        }
+    }
+
+    (function initMultiUserSimulator() {
+        const card = document.getElementById('multiUserSimulatorCard');
+        const tbody = document.getElementById('participantRows');
+        if (!card || !tbody) {
+            return;
+        }
+
+        const users = JSON.parse(card.dataset.users || '[]');
+        const remainingCents = parseInt(card.dataset.remainingCents || '0', 10);
+        let nextRowIndex = tbody.querySelectorAll('tr').length;
+
+        function createParticipantRow(selectedUserId, amountDollars, method) {
+            const idx = nextRowIndex++;
+            const tr = document.createElement('tr');
+
+            // User select cell
+            const tdUser = document.createElement('td');
+            const userSelect = document.createElement('select');
+            userSelect.className = 'form-select form-select-sm';
+            userSelect.name = `participants[${idx}][user_id]`;
+            userSelect.required = true;
+            users.forEach((u) => {
+                const opt = document.createElement('option');
+                opt.value = String(u.id);
+                opt.textContent = `#${u.id} • ${u.name}`;
+                if (Number(u.id) === Number(selectedUserId)) {
+                    opt.selected = true;
+                }
+                userSelect.appendChild(opt);
+            });
+            tdUser.appendChild(userSelect);
+
+            // Amount cell
+            const tdAmount = document.createElement('td');
+            const amountInput = document.createElement('input');
+            amountInput.type = 'number';
+            amountInput.step = '0.01';
+            amountInput.min = '0.01';
+            amountInput.className = 'form-control form-control-sm mono';
+            amountInput.name = `participants[${idx}][amount_dollars]`;
+            amountInput.value = amountDollars;
+            amountInput.required = true;
+            tdAmount.appendChild(amountInput);
+
+            // Method cell
+            const tdMethod = document.createElement('td');
+            const methodSelect = document.createElement('select');
+            methodSelect.className = 'form-select form-select-sm';
+            methodSelect.name = `participants[${idx}][payment_method]`;
+            methodSelect.required = true;
+            [
+                { value: 'card', label: 'Банківська картка (card)' },
+                { value: 'cash', label: 'Готівка (cash)' },
+            ].forEach((m) => {
+                const opt = document.createElement('option');
+                opt.value = m.value;
+                opt.textContent = m.label;
+                if (m.value === method) {
+                    opt.selected = true;
+                }
+                methodSelect.appendChild(opt);
+            });
+            tdMethod.appendChild(methodSelect);
+
+            // Remove button cell
+            const tdAction = document.createElement('td');
+            tdAction.className = 'text-center';
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'btn btn-outline-danger btn-sm remove-participant-btn';
+            removeBtn.title = 'Видалити учасника';
+            removeBtn.setAttribute('aria-label', 'Видалити учасника');
+            const icon = document.createElement('i');
+            icon.className = 'bi bi-trash';
+            removeBtn.appendChild(icon);
+            tdAction.appendChild(removeBtn);
+
+            tr.appendChild(tdUser);
+            tr.appendChild(tdAmount);
+            tr.appendChild(tdMethod);
+            tr.appendChild(tdAction);
+            return tr;
+        }
+
+        tbody.addEventListener('click', (event) => {
+            const btn = event.target.closest('.remove-participant-btn');
+            if (btn) {
+                const row = btn.closest('tr');
+                if (row) {
+                    row.remove();
+                }
+            }
+        });
+
+        const addBtn = document.getElementById('addParticipantBtn');
+        if (addBtn) {
+            addBtn.addEventListener('click', () => {
+                if (users.length === 0) {
+                    return;
+                }
+                const currentCount = tbody.querySelectorAll('tr').length;
+                const user = users[currentCount % users.length];
+                const method = currentCount % 2 === 0 ? 'card' : 'cash';
+                const fallbackAmount = remainingCents > 0 ? Math.min(remainingCents, 1000) : 1000;
+                tbody.appendChild(createParticipantRow(user.id, (fallbackAmount / 100).toFixed(2), method));
+            });
+        }
+
+        function applyEqualSplitPreset() {
+            if (users.length === 0) {
+                return;
+            }
+            tbody.innerHTML = '';
+            const maxRows = Math.min(Math.max(2, users.length), 10);
+            const rowCount = remainingCents >= 2 ? Math.min(maxRows, remainingCents) : maxRows;
+
+            if (remainingCents <= 0) {
+                for (let i = 0; i < rowCount; i++) {
+                    const user = users[i % users.length];
+                    const method = i % 2 === 0 ? 'card' : 'cash';
+                    tbody.appendChild(createParticipantRow(user.id, '10.00', method));
+                }
+                return;
+            }
+
+            if (remainingCents === 1) {
+                for (let i = 0; i < rowCount; i++) {
+                    const user = users[i % users.length];
+                    const method = i % 2 === 0 ? 'card' : 'cash';
+                    tbody.appendChild(createParticipantRow(user.id, '0.01', method));
+                }
+                return;
+            }
+
+            const baseCents = Math.floor(remainingCents / rowCount);
+            const remainderCents = remainingCents % rowCount;
+            for (let i = 0; i < rowCount; i++) {
+                const cents = i === 0 ? baseCents + remainderCents : baseCents;
+                const user = users[i % users.length];
+                const method = i % 2 === 0 ? 'card' : 'cash';
+                tbody.appendChild(createParticipantRow(user.id, (cents / 100).toFixed(2), method));
+            }
+        }
+
+        function applyConflictPreset() {
+            if (users.length === 0) {
+                return;
+            }
+            tbody.innerHTML = '';
+            const baseCents = Math.max(remainingCents, 2000);
+            const perRowCents = Math.ceil(baseCents * 0.65);
+            const rowCount = users.length >= 3 ? 3 : 2;
+            const amountStr = (perRowCents / 100).toFixed(2);
+
+            for (let i = 0; i < rowCount; i++) {
+                const user = users[i % users.length];
+                const method = i % 2 === 0 ? 'card' : 'cash';
+                tbody.appendChild(createParticipantRow(user.id, amountStr, method));
+            }
+        }
+
+        const equalBtn = document.getElementById('presetEqualSplitBtn');
+        if (equalBtn) {
+            equalBtn.addEventListener('click', applyEqualSplitPreset);
+        }
+
+        const conflictBtn = document.getElementById('presetConflictBtn');
+        if (conflictBtn) {
+            conflictBtn.addEventListener('click', applyConflictPreset);
+        }
+    })();
+</script>
+{% endblock %}
