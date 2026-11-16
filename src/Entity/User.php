@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Entity;
 
 use App\Repository\UserRepository;
@@ -8,7 +10,7 @@ use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
 
 #[ORM\Entity(repositoryClass: UserRepository::class)]
-#[ORM\Table(name: '`users`')]
+#[ORM\Table(name: 'users')]
 class User
 {
     #[ORM\Id]
@@ -17,18 +19,25 @@ class User
     private ?int $id = null;
 
     #[ORM\Column(length: 255)]
-    private ?string $username = null;
+    private string $name;
 
+    #[ORM\Column]
+    private \DateTimeImmutable $createdAt;
+
+    /** @var Collection<int, Order> */
     #[ORM\OneToMany(mappedBy: 'user', targetEntity: Order::class)]
     private Collection $orders;
 
+    /** @var Collection<int, Payment> */
     #[ORM\OneToMany(mappedBy: 'user', targetEntity: Payment::class)]
     private Collection $payments;
 
-    public function __construct()
+    public function __construct(string $name)
     {
-        $this->orders = new ArrayCollection();
-        $this->payments = new ArrayCollection();
+        $this->name      = $name;
+        $this->createdAt = new \DateTimeImmutable();
+        $this->orders    = new ArrayCollection();
+        $this->payments  = new ArrayCollection();
     }
 
     public function getId(): ?int
@@ -36,16 +45,21 @@ class User
         return $this->id;
     }
 
-    public function getUsername(): ?string
+    public function getName(): string
     {
-        return $this->username;
+        return $this->name;
     }
 
-    public function setUsername(string $username): static
+    public function setName(string $name): static
     {
-        $this->username = $username;
+        $this->name = $name;
 
         return $this;
+    }
+
+    public function getCreatedAt(): \DateTimeImmutable
+    {
+        return $this->createdAt;
     }
 
     /**

@@ -1,0 +1,211 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Дашборд замовлень — SplitPay{% endblock %}
+
+{% block body %}
+<div class="row g-4 mb-4">
+    <div class="col-12 d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <h2 class="h3 fw-bold mb-1">Дашборд спліт-платежів</h2>
+            <p class="text-muted mb-0">Керування спліт-замовленнями, відстеження балансів та перевірка конкурентних оплат</p>
+        </div>
+        <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#createUserModal">
+                <i class="bi bi-person-plus me-1"></i> Новий користувач
+            </button>
+            <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#createOrderModal">
+                <i class="bi bi-cart-plus me-1"></i> Нове замовлення
+            </button>
+        </div>
+    </div>
+</div>
+
+{# Зведена статистика #}
+<div class="row g-3 mb-4">
+    <div class="col-sm-6 col-xl-3">
+        <div class="card h-100 p-3">
+            <div class="d-flex align-items-center justify-content-between mb-2">
+                <span class="text-muted small fw-medium">Всього замовлень</span>
+                <span class="badge bg-primary-subtle text-primary border border-primary-subtle fs-7">
+                    {{ stats.totalOrders }}
+                </span>
+            </div>
+            <div class="h3 fw-bold mb-1">{{ stats.totalOrders }}</div>
+            <div class="small text-muted d-flex gap-2">
+                <span class="text-warning"><i class="bi bi-hourglass-split"></i> {{ stats.openOrdersCount }} відкритих</span>
+                &bull;
+                <span class="text-success"><i class="bi bi-check-circle"></i> {{ stats.paidOrdersCount }} закритих</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-sm-6 col-xl-3">
+        <div class="card h-100 p-3">
+            <div class="d-flex align-items-center justify-content-between mb-2">
+                <span class="text-muted small fw-medium">Сумарний оборот</span>
+                <i class="bi bi-cash-stack text-muted fs-5"></i>
+            </div>
+            <div class="h3 fw-bold mb-1">${{ (stats.totalTurnoverCents / 100)|number_format(2, '.', ' ') }}</div>
+            <div class="small text-muted">Загальна вартість усіх створених замовлень</div>
+        </div>
+    </div>
+
+    <div class="col-sm-6 col-xl-3">
+        <div class="card h-100 p-3">
+            <div class="d-flex align-items-center justify-content-between mb-2">
+                <span class="text-muted small fw-medium">Сплачено</span>
+                <span class="badge bg-success-subtle text-success border border-success-subtle">
+                    {{ stats.overallProgress }}%
+                </span>
+            </div>
+            <div class="h3 fw-bold mb-1 text-success">${{ (stats.totalPaidCents / 100)|number_format(2, '.', ' ') }}</div>
+            <div class="progress" style="height: 6px;">
+                <div class="progress-bar bg-success" role="progressbar" style="width: {{ stats.overallProgress }}%;" aria-valuenow="{{ stats.overallProgress }}" aria-valuemin="0" aria-valuemax="100"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-sm-6 col-xl-3">
+        <div class="card h-100 p-3">
+            <div class="d-flex align-items-center justify-content-between mb-2">
+                <span class="text-muted small fw-medium">Користувачів</span>
+                <i class="bi bi-people text-muted fs-5"></i>
+            </div>
+            <div class="h3 fw-bold mb-1">{{ users|length }}</div>
+            <div class="small text-muted">
+                {% if users|length > 0 %}
+                    Активні учасники сплітів
+                {% else %}
+                    Немає створених користувачів
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{# Список замовлень #}
+<div class="card shadow-sm mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center py-3">
+        <span class="h6 mb-0 fw-semibold"><i class="bi bi-receipt me-2 text-primary"></i>Список спліт-замовлень</span>
+        <span class="badge bg-secondary-subtle text-dark border">{{ orders|length }} записів</span>
+    </div>
+    <div class="card-body p-0">
+        {% if orders is empty %}
+            <div class="text-center py-5">
+                <div class="mb-3 text-muted display-6"><i class="bi bi-inbox"></i></div>
+                <h5 class="fw-semibold">Поки немає створених замовлень</h5>
+                <p class="text-muted small mb-3">Створіть своє перше спліт-замовлення для демонстрації оплати та перевірки блокувань.</p>
+                <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#createOrderModal">
+                    <i class="bi bi-cart-plus me-1"></i> Створити замовлення
+                </button>
+            </div>
+        {% else %}
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th class="ps-3" style="width: 70px;">ID</th>
+                            <th>Найменування замовлення</th>
+                            <th>Творець</th>
+                            <th>Сума ($)</th>
+                            <th>Сплачено</th>
+                            <th style="min-width: 170px;">Прогрес оплати</th>
+                            <th>Статус</th>
+                            <th>Дата створення</th>
+                            <th class="text-end pe-3">Дії</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for order in orders %}
+                            {% set percent = (order.fullPriceCents > 0) ? ((order.paidPriceCents / order.fullPriceCents) * 100)|round : 0 %}
+                            <tr>
+                                <td class="ps-3 mono fw-semibold">#{{ order.id }}</td>
+                                <td>
+                                    <a href="{{ path('web_order_show', {id: order.id}) }}" class="fw-semibold text-decoration-none text-dark">
+                                        {{ order.name }}
+                                    </a>
+                                    <div class="small text-muted mono">version: {{ order.version }}</div>
+                                </td>
+                                <td>
+                                    <span class="badge bg-light text-dark border">
+                                        <i class="bi bi-person me-1"></i>{{ order.user ? order.user.name : 'Unknown' }}
+                                    </span>
+                                </td>
+                                <td class="mono fw-semibold">${{ (order.fullPriceCents / 100)|number_format(2, '.', ' ') }}</td>
+                                <td class="mono">${{ (order.paidPriceCents / 100)|number_format(2, '.', ' ') }}</td>
+                                <td>
+                                    <div class="d-flex align-items-center gap-2">
+                                        <div class="progress flex-grow-1" style="height: 8px;">
+                                            <div class="progress-bar {% if order.status.value == 'paid' %}bg-success{% else %}bg-primary{% endif %}" 
+                                                 role="progressbar" 
+                                                 style="width: {{ percent > 100 ? 100 : percent }}%;" 
+                                                 aria-valuenow="{{ percent }}" 
+                                                 aria-valuemin="0" 
+                                                 aria-valuemax="100">
+                                            </div>
+                                        </div>
+                                        <span class="small mono fw-medium {% if percent >= 100 %}text-success{% endif %}">{{ percent }}%</span>
+                                    </div>
+                                    <div class="small text-muted">
+                                        {% if order.remainingCents > 0 %}
+                                            залишок: ${{ (order.remainingCents / 100)|number_format(2, '.', ' ') }}
+                                        {% else %}
+                                            <span class="text-success"><i class="bi bi-check2"></i> Повністю закрито</span>
+                                        {% endif %}
+                                    </div>
+                                </td>
+                                <td>
+                                    {% if order.status.value == 'paid' %}
+                                        <span class="badge bg-success-subtle text-success border border-success-subtle px-2 py-1">
+                                            <i class="bi bi-check-circle-fill me-1"></i>PAID
+                                        </span>
+                                    {% else %}
+                                        <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle px-2 py-1">
+                                            <i class="bi bi-hourglass-split me-1"></i>OPEN
+                                        </span>
+                                    {% endif %}
+                                </td>
+                                <td class="small text-muted">
+                                    {{ order.createdAt|date('d.m.Y H:i') }}
+                                </td>
+                                <td class="text-end pe-3">
+                                    <a href="{{ path('web_order_show', {id: order.id}) }}" class="btn btn-outline-primary btn-sm">
+                                        Перейти <i class="bi bi-arrow-right ms-1"></i>
+                                    </a>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+{# Список зареєстрованих користувачів #}
+<div class="card shadow-sm">
+    <div class="card-header py-3 d-flex justify-content-between align-items-center">
+        <span class="h6 mb-0 fw-semibold"><i class="bi bi-people me-2 text-secondary"></i>Користувачі для проведення спліт-платежів</span>
+        <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#createUserModal">
+            <i class="bi bi-plus-lg me-1"></i> Додати
+        </button>
+    </div>
+    <div class="card-body">
+        {% if users is empty %}
+            <p class="text-muted small mb-0">Користувачів поки немає. Створіть користувачів, щоб здійснювати платежі від їхнього імені.</p>
+        {% else %}
+            <div class="d-flex flex-wrap gap-2">
+                {% for u in users %}
+                    <div class="border rounded px-3 py-2 bg-light d-flex align-items-center gap-2">
+                        <i class="bi bi-person-circle text-primary"></i>
+                        <div>
+                            <div class="fw-semibold small">{{ u.name }}</div>
+                            <div class="text-muted mono" style="font-size: 0.75rem;">ID: #{{ u.id }}</div>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

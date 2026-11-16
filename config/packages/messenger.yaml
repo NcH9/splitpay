@@ -1,0 +1,44 @@
+framework:
+    messenger:
+        failure_transport: failed
+
+        transports:
+            # Main asynchronous AMQP transport connected to RabbitMQ
+            async:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                options:
+                    auto_setup: true
+                    exchange:
+                        name: splitpay_events
+                        type: fanout
+                    queues:
+                        splitpay_async: ~
+                retry_strategy:
+                    max_retries: 3
+                    delay: 1000        # initial backoff: 1s
+                    multiplier: 2      # exponential backoff: 1s -> 2s -> 4s
+                    max_delay: 10000
+
+            # Dead Letter Queue (DLQ) transport for failed/poison messages
+            failed:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                options:
+                    auto_setup: true
+                    exchange:
+                        name: splitpay_dlq
+                        type: fanout
+                    queues:
+                        splitpay_failed: ~
+
+            sync: 'sync://'
+
+        routing:
+            'App\Message\PaymentReceivedEvent': async
+            'App\Message\OrderFullyPaidEvent': async
+
+when@test:
+    framework:
+        messenger:
+            transports:
+                async: 'sync://'
+                failed: 'sync://'

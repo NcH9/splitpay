@@ -8,6 +8,13 @@ services:
     working_dir: /var/www/html
     volumes:
       - ./:/var/www/html
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     networks:
       - symfony
 
@@ -43,6 +50,41 @@ services:
     networks:
       - symfony
 
+  redis:
+    image: redis:7-alpine
+    container_name: symfony_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis_data:/data
+    networks:
+      - symfony
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: symfony_rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - symfony
+
 networks:
   symfony:
 
@@ -51,3 +93,5 @@ volumes:
 ###> doctrine/doctrine-bundle ###
   database_data:
 ###< doctrine/doctrine-bundle ###
+  redis_data:
+  rabbitmq_data:

@@ -99,6 +99,11 @@ Symfony's coding standard, the `@Symfony` php-cs-fixer ruleset (a PSR-12-derived
 superset). Run `vendor/bin/php-cs-fixer fix` if `friendsofphp/php-cs-fixer` is
 installed; it isn't part of the skeleton by default.
 
+## Language policy
+
+All user-facing text, web interface templates, error messages, flash notifications,
+and documentation in the project must be in **Ukrainian** (primary) or English.
+
 ## Discover, don't guess
 
 Framework APIs change between versions and your training data may be stale. Look
